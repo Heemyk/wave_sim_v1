@@ -64,7 +64,6 @@ RUN pip install -e .
 # Copy application code
 COPY backend/ ./backend/
 COPY fem/ ./fem/
-COPY raytracer/ ./raytracer/
 
 # Create directories for data
 RUN mkdir -p /app/data/{meshes,results,cache}
