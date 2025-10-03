@@ -17,7 +17,7 @@ if command -v docker &> /dev/null; then
     
     # Build backend container
     echo "Building backend container..."
-    docker build -f docker/Dockerfile.backend -t acoustic-sim-backend .
+    docker build -f docker/Dockerfile.backend -t --no-cache acoustic-sim-backend .
     
     # Build frontend container
     echo "Building frontend container..."
@@ -36,7 +36,7 @@ else
     echo ""
     echo "For local development without Docker:"
     echo "1. Install Python 3.9+ and Node.js 18+"
-    echo "2. Install FEniCS: conda install -c conda-forge fenics dolfinx"
+    echo "2. Install FEniCS: conda install -c conda-forge fenics-dolfinx"
     echo "3. Install Python dependencies: pip install -e ."
     echo "4. Install frontend dependencies: cd frontend && npm install"
     echo "5. Start backend: python -m backend.app.main"

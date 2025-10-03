@@ -28,8 +28,7 @@ SHELL ["conda", "run", "-n", "acoustic-sim", "/bin/bash", "-c"]
 
 # Install FEniCS via conda-forge (more reliable than pip)
 RUN conda install -c conda-forge \
-    fenics \
-    dolfinx \
+    fenics-dolfinx \
     petsc4py \
     slepc4py \
     mpi4py \

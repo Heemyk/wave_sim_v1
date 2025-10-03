@@ -2,12 +2,20 @@
 
 import asyncio
 import logging
+import sys
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
-from backend.app.schemas import SimulationRequest, SimulationResult, FrequencyResult
-from fem.helmholtz_solver import HelmholtzSolver, create_simple_box_mesh
+# Add the project root to Python path for imports
+sys.path.append(str(Path(__file__).parent.parent.parent.parent))
+
+try:
+    from backend.app.schemas import SimulationRequest, SimulationResult, FrequencyResult
+    from fem.helmholtz_solver import HelmholtzSolver, create_simple_box_mesh
+except ImportError as e:
+    logging.error(f"Import error in fem_worker: {e}")
+    raise
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +41,7 @@ class FEMWorker:
         try:
             # Generate mesh
             mesh_file = await self._generate_mesh(request)
+            logger.info(f"Generated mesh: {mesh_file}")
             
             # Initialize solver
             self.solver = HelmholtzSolver(
@@ -40,9 +49,11 @@ class FEMWorker:
                 element_order=request.mesh.element_order,
                 boundary_impedance=self._get_boundary_impedance(request)
             )
+            logger.info(f"Solver initialized with {self.solver.V.dofmap.index_map.size_global} DOFs")
             
             # Generate frequency list
             frequencies = self._generate_frequencies(request.simulation)
+            logger.info(f"Computing {len(frequencies)} frequencies from {frequencies[0]:.1f} to {frequencies[-1]:.1f} Hz")
             
             # Run frequency-domain simulation
             frequency_results = []
@@ -63,6 +74,7 @@ class FEMWorker:
             # Compute impulse responses if requested
             impulse_responses = None
             if request.output.impulse_response:
+                logger.info("Computing impulse responses...")
                 impulse_responses = await self._compute_impulse_responses(
                     frequency_results, request
                 )
@@ -92,6 +104,8 @@ class FEMWorker:
             
         except Exception as e:
             logger.error(f"Simulation failed: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             raise
     
     async def _generate_mesh(self, request: SimulationRequest) -> str:
@@ -105,6 +119,8 @@ class FEMWorker:
             center = request.room.center or [0.0, 0.0, 0.0]
             h = request.mesh.target_h
             
+            logger.info(f"Creating box mesh: {dimensions} at {center} with h={h}")
+            
             mesh_file = create_simple_box_mesh(
                 dimensions, center, h,
                 filename=str(mesh_dir / f"box_{request.name or 'sim'}.msh")
@@ -114,6 +130,7 @@ class FEMWorker:
             if not request.room.geometry_file:
                 raise ValueError("Geometry file required for custom rooms")
             mesh_file = request.room.geometry_file
+            logger.info(f"Using provided mesh file: {mesh_file}")
         
         return mesh_file
     

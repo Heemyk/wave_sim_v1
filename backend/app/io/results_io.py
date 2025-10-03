@@ -1,3 +1,4 @@
+
 """Results I/O for acoustic simulations."""
 
 import json
@@ -6,7 +7,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 import h5py
 import numpy as np
-
+from typing import List
 from backend.app.schemas import SimulationResult, SimulationRequest
 
 logger = logging.getLogger(__name__)

@@ -1,22 +1,16 @@
-# Core dependencies
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-websockets>=12.0
-pydantic>=2.5.0
-numpy>=1.24.0
-scipy>=1.11.0
-h5py>=3.9.0
-meshio>=5.3.0
-gmsh>=4.11.0
-matplotlib>=3.7.0
-plotly>=5.17.0
-python-multipart>=0.0.6
-aiofiles>=23.2.0
-redis>=5.0.0
-rq>=1.15.0
+# Core dependencies (conda-compatible, Python 3.11)
+fastapi
+uvicorn
+websockets
+pydantic
+numpy
+scipy
+h5py
+matplotlib
+plotly
+python-multipart
+aiofiles
+redis
 
-# FEM dependencies (optional - uncomment if needed)
-# fenics>=2019.1.0
-# dolfinx>=0.6.0
-# petsc4py>=3.19.0
-# slepc4py>=3.19.0
+# Note: meshio, gmsh, rq not available in conda-forge
+# Will install these separately via conda-forge or pip

@@ -1,0 +1,111 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+      no_cache: true
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app/backend
+      - ./fem:/app/fem
+      - ./examples:/app/examples
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - PYTHONPATH=/app
+      - REDIS_URL=redis://redis:6379
+      - LOG_LEVEL=DEBUG
+    depends_on:
+      - redis
+    networks:
+      - acoustic-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+      no_cache: true
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+      - REACT_APP_WS_URL=ws://localhost:8000
+      - CHOKIDAR_USEPOLLING=true
+    depends_on:
+      - backend
+    networks:
+      - acoustic-net
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - acoustic-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Jupyter notebook for development and analysis
+  jupyter:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+      no_cache: true
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/app/notebooks
+      - ./examples:/app/examples
+      - ./data:/app/data
+      - ./fem:/app/fem
+    environment:
+      - PYTHONPATH=/app
+    command: ["conda", "run", "-n", "acoustic-sim", "jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--NotebookApp.token=''", "--NotebookApp.password=''"]
+    networks:
+      - acoustic-net
+    profiles:
+      - dev
+
+  # Optional: PostgreSQL for advanced data storage
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=acoustic_sim
+      - POSTGRES_USER=acoustic_user
+      - POSTGRES_PASSWORD=acoustic_pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - acoustic-net
+    profiles:
+      - dev
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  postgres_data:
+
+networks:
+  acoustic-net:
+    driver: bridge
