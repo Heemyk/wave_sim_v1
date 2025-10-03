@@ -1,0 +1,120 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "acoustic-sim"
+version = "0.1.0"
+description = "Browser-deployable acoustic room simulator with FEM + geometric acoustics"
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "websockets>=12.0",
+    "pydantic>=2.5.0",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    "h5py>=3.9.0",
+    "meshio>=5.3.0",
+    "gmsh>=4.11.0",
+    "matplotlib>=3.7.0",
+    "plotly>=5.17.0",
+    "python-multipart>=0.0.6",
+    "aiofiles>=23.2.0",
+    "redis>=5.0.0",
+    "rq>=1.15.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.7.0",
+    "pre-commit>=3.5.0",
+]
+fem = [
+    "fenics>=2019.1.0",
+    "dolfinx>=0.6.0",
+    "petsc4py>=3.19.0",
+    "slepc4py>=3.19.0",
+]
+gpu = [
+    "cupy-cuda12x>=12.0.0",  # For future GPU migration
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/acoustic-sim"
+Repository = "https://github.com/yourusername/acoustic-sim"
+Issues = "https://github.com/yourusername/acoustic-sim/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["backend*", "fem*", "raytracer*"]
+
+[tool.black]
+line-length = 88
+target-version = ['py39']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+known_first_party = ["backend", "fem", "raytracer"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "fenics.*",
+    "dolfinx.*",
+    "petsc4py.*",
+    "slepc4py.*",
+    "gmsh.*",
+    "meshio.*",
+]
+ignore_missing_imports = true

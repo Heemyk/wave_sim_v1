@@ -1,0 +1,72 @@
+# Sample room configuration for acoustic simulation
+
+name: "Simple Box Room"
+description: "A simple rectangular room for testing acoustic simulations"
+
+room:
+  type: "box"
+  dimensions: [4.0, 3.0, 2.5]  # Length × Width × Height (meters)
+  center: [0.0, 0.0, 0.0]
+
+boundaries:
+  walls:
+    alpha: 0.15  # Absorption coefficient
+    frequency_dependent: false
+  floor:
+    alpha: 0.1
+    frequency_dependent: false
+  ceiling:
+    alpha: 0.2
+    frequency_dependent: false
+
+sources:
+  - id: "source1"
+    type: "point"
+    position: [0.0, 0.0, 1.0]  # Center of room, 1m height
+    signal:
+      type: "chirp"
+      f0: 20      # Start frequency (Hz)
+      f1: 2000    # End frequency (Hz)
+      duration: 1.0
+      amplitude: 1.0
+    amplitude: 1.0
+
+mesh:
+  element_order: 1
+  target_h: 0.1   # Target element size (meters)
+  refinement_level: 0
+  adaptive: false
+
+simulation:
+  type: "frequency_domain"
+  fmin: 20
+  fmax: 2000
+  df: 50          # Frequency step (Hz)
+  solver_type: "direct"
+  tolerance: 1e-6
+
+output:
+  points_of_interest:
+    - id: "center"
+      position: [0.0, 0.0, 1.0]
+      type: "point"
+    - id: "corner1"
+      position: [1.5, 1.0, 1.0]
+      type: "point"
+    - id: "corner2"
+      position: [-1.5, -1.0, 1.0]
+      type: "point"
+  
+  sensors: []
+  
+  field_snapshots: true
+  frequency_response: true
+  impulse_response: true
+  visualization_data: true
+  format: "hdf5"
+  compression: true
+
+# Performance settings
+parallel_jobs: 4
+memory_limit: "4GB"
+timeout: 300  # 5 minutes
