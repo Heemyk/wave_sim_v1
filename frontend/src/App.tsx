@@ -5,23 +5,7 @@ import styled from 'styled-components';
 import Plot from 'react-plotly.js';
 import axios from 'axios';
 
-// Declare global electronAPI for TypeScript
-declare global {
-  interface Window {
-    electronAPI?: {
-      backendRequest: (config: any) => Promise<any>;
-      websocketConnect: (url: string) => Promise<any>;
-      onMenuNewSimulation: (callback: () => void) => void;
-      onMenuRunSimulation: (callback: () => void) => void;
-      onMenuStopSimulation: (callback: () => void) => void;
-      onWebSocketConnected: (callback: () => void) => void;
-      onWebSocketMessage: (callback: (event: any, data: string) => void) => void;
-      onWebSocketClosed: (callback: () => void) => void;
-      onWebSocketError: (callback: (event: any, error: string) => void) => void;
-      removeAllListeners: (channel: string) => void;
-    };
-  }
-}
+// No Electron dependencies - using direct web API calls
 
 // Types
 interface SimulationRequest {
@@ -48,6 +32,7 @@ interface SimulationRequest {
   }>;
   mesh: {
     element_order: number;
+    target_h?: number;
   };
   simulation: {
     fmin: number;
@@ -169,50 +154,222 @@ const Status = styled.div<{ status: string }>`
   }};
 `;
 
-// 3D Scene Component
+// 3D Scene Component with FEM visualization
 const Scene3D: React.FC<{
   config: SimulationRequest;
   sources: Array<{ id: string; position: number[] }>;
   sensors: Array<{ id: string; position: number[] }>;
   meshData?: any;
   fieldData?: any;
-}> = ({ config, sources, sensors, meshData, fieldData }) => {
+  selectedFrequency?: number;
+}> = ({ config, sources, sensors, meshData, fieldData, selectedFrequency }) => {
+  // Generate colors based on pressure field data
+  const getVertexColors = () => {
+    if (!fieldData?.field_data?.vertices || !selectedFrequency) {
+      return null;
+    }
+
+    const vertices = fieldData.field_data.vertices;
+    const pressures = fieldData.field_data.pressure_values || [];
+    
+    if (pressures.length !== vertices.length) {
+      return null;
+    }
+
+    // Normalize pressure values for color mapping
+    const magnitudes = pressures.map((p: any) => {
+      if (typeof p === 'object' && p.real !== undefined) {
+        return Math.sqrt(p.real * p.real + p.imag * p.imag);
+      }
+      return Math.abs(p || 0);
+    });
+
+    const minPressure = Math.min(...magnitudes);
+    const maxPressure = Math.max(...magnitudes);
+    const range = maxPressure - minPressure;
+
+    // Create color array (RGB values for each vertex)
+    const colors = new Float32Array(vertices.length * 3);
+    
+    for (let i = 0; i < magnitudes.length; i++) {
+      const normalized = range > 0 ? (magnitudes[i] - minPressure) / range : 0.5;
+      
+      // Color mapping: blue (low) -> green -> yellow -> red (high)
+      let r, g, b;
+      if (normalized < 0.25) {
+        // Blue to cyan
+        r = 0;
+        g = normalized * 4;
+        b = 1;
+      } else if (normalized < 0.5) {
+        // Cyan to green
+        r = 0;
+        g = 1;
+        b = 1 - (normalized - 0.25) * 4;
+      } else if (normalized < 0.75) {
+        // Green to yellow
+        r = (normalized - 0.5) * 4;
+        g = 1;
+        b = 0;
+      } else {
+        // Yellow to red
+        r = 1;
+        g = 1 - (normalized - 0.75) * 4;
+        b = 0;
+      }
+      
+      colors[i * 3] = r;
+      colors[i * 3 + 1] = g;
+      colors[i * 3 + 2] = b;
+    }
+    
+    return colors;
+  };
+
+  const vertexColors = getVertexColors();
+
   return (
     <Canvas camera={{ position: [10, 10, 10], fov: 60 }}>
-      <ambientLight intensity={0.5} />
-      <directionalLight position={[10, 10, 5]} intensity={1} />
+      <ambientLight intensity={0.6} />
+      <directionalLight position={[10, 10, 5]} intensity={0.8} />
+      <pointLight position={[-10, -10, -10]} intensity={0.3} />
       
-      {/* Room */}
+      {/* Room wireframe (always visible) */}
       <Box 
         args={[config.room.dimensions[0], config.room.dimensions[1], config.room.dimensions[2]]} 
         position={[config.room.center[0], config.room.center[1], config.room.center[2]]}
       >
-        <meshBasicMaterial color="#e0e0e0" wireframe />
+        <meshBasicMaterial color="#888888" wireframe />
       </Box>
+      
+      {/* FEM Mesh with pressure field visualization */}
+      {meshData?.mesh && fieldData?.field_data && (
+        <group>
+          {/* Render mesh vertices colored by pressure field */}
+          {meshData.mesh.vertices?.map((vertex: number[], index: number) => {
+            // Get pressure value for this vertex
+            let pressure = 0;
+            if (fieldData.field_data.pressure_values && fieldData.field_data.pressure_values[index]) {
+              const p = fieldData.field_data.pressure_values[index];
+              if (typeof p === 'object' && p.real !== undefined) {
+                pressure = Math.sqrt(p.real * p.real + p.imag * p.imag);
+              } else {
+                pressure = Math.abs(p || 0);
+              }
+            }
+            
+            // Normalize pressure for color mapping (0-1)
+            const maxPressure = 1.0; // You can adjust this based on your data
+            const normalizedPressure = Math.min(pressure / maxPressure, 1.0);
+            
+            // Color mapping: blue (low) -> green -> yellow -> red (high)
+            let hue;
+            if (normalizedPressure < 0.25) {
+              hue = 240 - normalizedPressure * 60; // Blue to cyan
+            } else if (normalizedPressure < 0.5) {
+              hue = 180 - (normalizedPressure - 0.25) * 60; // Cyan to green
+            } else if (normalizedPressure < 0.75) {
+              hue = 120 - (normalizedPressure - 0.5) * 60; // Green to yellow
+            } else {
+              hue = 60 - (normalizedPressure - 0.75) * 60; // Yellow to red
+            }
+            
+            return (
+              <Sphere
+                key={index}
+                position={[vertex[0], vertex[1], vertex[2]]}
+                args={[0.05]} // Slightly larger for better visibility
+              >
+                <meshBasicMaterial 
+                  color={`hsl(${hue}, 70%, 50%)`}
+                />
+              </Sphere>
+            );
+          })}
+        </group>
+      )}
       
       {/* Sources */}
       {sources.map((source) => (
-        <Sphere 
-          key={source.id} 
-          position={[source.position[0], source.position[1], source.position[2]]} 
-          args={[0.1]}
-        >
-          <meshBasicMaterial color="#ff4444" />
-        </Sphere>
+        <group key={source.id}>
+          <Sphere 
+            position={[source.position[0], source.position[1], source.position[2]]} 
+            args={[0.15]}
+          >
+            <meshBasicMaterial color="#ff4444" />
+          </Sphere>
+          <Text
+            position={[source.position[0], source.position[1] + 0.3, source.position[2]]}
+            fontSize={0.1}
+            color="#ff4444"
+            anchorX="center"
+            anchorY="middle"
+          >
+            {source.id}
+          </Text>
+        </group>
       ))}
       
       {/* Sensors */}
       {sensors.map((sensor) => (
-        <Sphere 
-          key={sensor.id} 
-          position={[sensor.position[0], sensor.position[1], sensor.position[2]]} 
-          args={[0.05]}
-        >
-          <meshBasicMaterial color="#4444ff" />
-        </Sphere>
+        <group key={sensor.id}>
+          <Sphere 
+            position={[sensor.position[0], sensor.position[1], sensor.position[2]]} 
+            args={[0.08]}
+          >
+            <meshBasicMaterial color="#4444ff" />
+          </Sphere>
+          <Text
+            position={[sensor.position[0], sensor.position[1] + 0.2, sensor.position[2]]}
+            fontSize={0.08}
+            color="#4444ff"
+            anchorX="center"
+            anchorY="middle"
+          >
+            {sensor.id}
+          </Text>
+        </group>
       ))}
       
-      <OrbitControls />
+      {/* Color bar legend */}
+      {vertexColors && (
+        <group position={[6, 0, 0]}>
+          <Text
+            position={[0, 3, 0]}
+            fontSize={0.15}
+            color="#000000"
+            anchorX="center"
+            anchorY="middle"
+          >
+            Pressure Field (Pa)
+          </Text>
+          {/* Color bar */}
+          {Array.from({ length: 20 }, (_, i) => (
+            <Box
+              key={i}
+              args={[0.1, 0.1, 0.1]}
+              position={[0, 2.5 - i * 0.1, 0]}
+            >
+              <meshBasicMaterial color={
+                (() => {
+                  const normalized = i / 19;
+                  if (normalized < 0.25) {
+                    return `hsl(${240 - normalized * 60}, 100%, 50%)`;
+                  } else if (normalized < 0.5) {
+                    return `hsl(${180 - (normalized - 0.25) * 60}, 100%, 50%)`;
+                  } else if (normalized < 0.75) {
+                    return `hsl(${120 - (normalized - 0.5) * 60}, 100%, 50%)`;
+                  } else {
+                    return `hsl(${60 - (normalized - 0.75) * 60}, 100%, 50%)`;
+                  }
+                })()
+              } />
+            </Box>
+          ))}
+        </group>
+      )}
+      
+      <OrbitControls enableDamping dampingFactor={0.05} />
     </Canvas>
   );
 };
@@ -222,28 +379,15 @@ const apiCall = async (url: string, method: string = 'GET', data?: any) => {
   const baseUrl = 'http://localhost:8000';
   const fullUrl = url.startsWith('http') ? url : `${baseUrl}${url}`;
   
-  if (window.electronAPI) {
-    // Use Electron's secure API
-    const result = await window.electronAPI.backendRequest({
-      url: fullUrl,
-      method,
-      data
-    });
-    
-    if (result.success) {
-      return { data: result.data };
-    } else {
-      throw new Error(result.error);
+  return await axios({
+    method,
+    url: fullUrl,
+    data,
+    timeout: 30000,
+    headers: {
+      'Content-Type': 'application/json',
     }
-  } else {
-    // Fallback to direct axios calls (for web browser)
-    return await axios({
-      method,
-      url: fullUrl,
-      data,
-      timeout: 30000
-    });
-  }
+  });
 };
 
 // Main App Component
@@ -271,7 +415,8 @@ const App: React.FC = () => {
       }
     }],
     mesh: {
-      element_order: 1
+      element_order: 1,
+      target_h: 0.2  // Coarser mesh for faster computation
     },
     simulation: {
       fmin: 100,
@@ -294,35 +439,11 @@ const App: React.FC = () => {
   const [meshData, setMeshData] = useState<any>(null);
   const [fieldData, setFieldData] = useState<any>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [selectedFrequency, setSelectedFrequency] = useState<number>(100);
 
   const wsRef = useRef<WebSocket | null>(null);
 
-  // Menu event handlers
-  useEffect(() => {
-    if (window.electronAPI) {
-      window.electronAPI.onMenuRunSimulation(() => {
-        if (!isRunning) {
-          runSimulation();
-        }
-      });
-      
-      window.electronAPI.onMenuStopSimulation(() => {
-        if (isRunning && jobStatus?.job_id) {
-          // Cancel the job
-          apiCall(`/api/jobs/${jobStatus.job_id}`, 'DELETE');
-          setIsRunning(false);
-        }
-      });
-      
-      window.electronAPI.onMenuNewSimulation(() => {
-        setResults(null);
-        setMeshData(null);
-        setFieldData(null);
-        setJobStatus(null);
-        setIsRunning(false);
-      });
-    }
-  }, [isRunning, jobStatus?.job_id]);
+  // No Electron menu handlers needed for web app
 
   // WebSocket connection
   useEffect(() => {
@@ -334,12 +455,12 @@ const App: React.FC = () => {
         const data = JSON.parse(event.data);
         setJobStatus(data);
         
-        if (data.status === 'completed') {
-          setIsRunning(false);
-          fetchResults(data.job_id);
-          fetchMeshData(data.job_id);
-          fetchFieldData(data.job_id, config.simulation.fmin);
-        } else if (data.status === 'failed') {
+         if (data.status === 'completed') {
+           setIsRunning(false);
+           fetchResults(data.job_id);
+           fetchMeshData(data.job_id);
+           fetchFieldData(data.job_id, selectedFrequency);
+         } else if (data.status === 'failed') {
           setIsRunning(false);
         }
       };
@@ -401,7 +522,7 @@ const App: React.FC = () => {
 
   const updateConfig = (path: string, value: any) => {
     setConfig(prev => {
-      const newConfig = { ...prev };
+      const newConfig = { ...prev } as any;
       const keys = path.split('.');
       let current = newConfig;
       
@@ -522,6 +643,29 @@ const App: React.FC = () => {
           {isRunning ? 'Running...' : 'Run Simulation'}
         </Button>
 
+        {/* Frequency Selection for Visualization */}
+        {results && results.frequencies && results.frequencies.length > 0 && (
+          <FormGroup>
+            <Label>Visualization Frequency</Label>
+            <Select 
+              value={selectedFrequency} 
+              onChange={(e) => {
+                const freq = parseFloat(e.target.value);
+                setSelectedFrequency(freq);
+                if (jobStatus?.job_id) {
+                  fetchFieldData(jobStatus.job_id, freq);
+                }
+              }}
+            >
+              {results.frequencies.map((freq: any) => (
+                <option key={freq.frequency} value={freq.frequency}>
+                  {freq.frequency} Hz
+                </option>
+              ))}
+            </Select>
+          </FormGroup>
+        )}
+
         {jobStatus && (
           <Status status={jobStatus.status}>
             <strong>{jobStatus.status.toUpperCase()}</strong>
@@ -544,6 +688,7 @@ const App: React.FC = () => {
             sensors={config.output.sensors}
             meshData={meshData}
             fieldData={fieldData}
+            selectedFrequency={selectedFrequency}
           />
         </Viewer>
         

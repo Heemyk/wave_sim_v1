@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import numpy as np
 import uvicorn
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -341,11 +342,27 @@ async def get_field_data(job_id: str, frequency: float):
         visualization_data = freq_result.metadata.get("visualization_data", {})
         field_data = visualization_data.get("field_data", {})
         
+        # Convert complex numbers to JSON-serializable format
+        def convert_complex(obj):
+            if isinstance(obj, complex):
+                return {"real": float(obj.real), "imag": float(obj.imag)}
+            elif isinstance(obj, dict):
+                return {k: convert_complex(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_complex(item) for item in obj]
+            elif isinstance(obj, np.ndarray):
+                return convert_complex(obj.tolist())
+            else:
+                return obj
+        
+        # Convert sensor data
+        sensor_data = convert_complex(freq_result.sensor_data) if freq_result.sensor_data else {}
+        
         return {
             "job_id": job_id,
             "frequency": frequency,
-            "field_data": field_data,
-            "sensor_data": freq_result.sensor_data
+            "field_data": convert_complex(field_data),
+            "sensor_data": sensor_data
         }
         
     except HTTPException:
@@ -372,13 +389,26 @@ async def get_visualization_data(job_id: str):
             "metadata": results.metadata
         }
         
+        # Convert complex numbers to JSON-serializable format
+        def convert_complex(obj):
+            if isinstance(obj, complex):
+                return {"real": float(obj.real), "imag": float(obj.imag)}
+            elif isinstance(obj, dict):
+                return {k: convert_complex(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_complex(item) for item in obj]
+            elif isinstance(obj, np.ndarray):
+                return convert_complex(obj.tolist())
+            else:
+                return obj
+        
         for freq_result in results.frequencies:
             visualization_data = freq_result.metadata.get("visualization_data", {})
             
             freq_data = {
                 "frequency": freq_result.frequency,
-                "sensor_data": freq_result.sensor_data,
-                "field_data": visualization_data.get("field_data", {}),
+                "sensor_data": convert_complex(freq_result.sensor_data) if freq_result.sensor_data else {},
+                "field_data": convert_complex(visualization_data.get("field_data", {})),
                 "mesh_info": visualization_data.get("mesh_info", {})
             }
             visualization_summary["frequencies"].append(freq_data)
@@ -396,7 +426,7 @@ async def get_visualization_data(job_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.websocket("/ws/{job_id}")
+@app.websocket("/ws/jobs/{job_id}")
 async def websocket_endpoint(websocket: WebSocket, job_id: str):
     """WebSocket endpoint for real-time job updates."""
     await manager.connect(websocket)

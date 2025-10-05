@@ -52,18 +52,46 @@ class EndToEndTestSuite:
                 "ceiling": {"alpha": 0.15}
             },
             "sources": [{
+                "id": "source_1",
+                "type": "point",
                 "position": [2.0, 1.5, 1.0],
-                "signal": {"type": "sine", "frequency": 100.0, "amplitude": 1.0}
+                "signal": {
+                    "type": "sine",
+                    "f0": 100.0,
+                    "f1": 200.0,
+                    "duration": 1.0,
+                    "amplitude": 1.0,
+                    "phase": 0.0
+                },
+                "amplitude": 1.0
             }],
-            "listeners": [
-                {"id": "listener_1", "position": [1.0, 1.0, 1.0]},
-                {"id": "listener_2", "position": [3.0, 2.0, 1.5]}
-            ],
+            "mesh": {
+                "element_order": 1,
+                "target_h": 0.2,
+                "refinement_level": 0,
+                "adaptive": False,
+                "quality_threshold": 0.3
+            },
             "simulation": {
+                "type": "frequency_domain",
                 "fmin": 100.0,
                 "fmax": 200.0,
-                "fstep": 100.0,  # Only 2 frequencies for faster testing
-                "element_order": 1
+                "df": 100.0,  # Only 2 frequencies for faster testing
+                "solver_type": "direct",
+                "tolerance": 1e-6,
+                "max_iterations": 1000
+            },
+            "output": {
+                "sensors": [
+                    {"id": "listener_1", "position": [1.0, 1.0, 1.0], "type": "point"},
+                    {"id": "listener_2", "position": [3.0, 2.0, 1.5], "type": "point"}
+                ],
+                "field_snapshots": True,
+                "frequency_response": True,
+                "impulse_response": False,  # Skip for faster testing
+                "visualization_data": True,
+                "format": "json",
+                "compression": False
             }
         }
     

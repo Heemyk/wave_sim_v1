@@ -153,7 +153,7 @@ class HelmholtzSolver:
                     return Mesh.from_file(str(mesh_path))
                 except Exception as e2:
                     logger.error(f"Direct loading also failed: {e2}")
-                    raise RuntimeError(f"Mesh loading failed: {e}")
+                raise RuntimeError(f"Mesh loading failed: {e}")
         else:
             # Handle other mesh formats directly
             logger.info(f"Loading mesh file using SfePy: {mesh_path}")
@@ -247,7 +247,7 @@ class HelmholtzSolver:
             
             # Solve the linear system
             logger.info("Solving linear system")
-            if solver_type == "direct":
+        if solver_type == "direct":
                 # Direct solver using sparse LU decomposition
                 pressure_values = scipy.sparse.linalg.spsolve(A, f)
             else:
@@ -440,7 +440,7 @@ class HelmholtzSolver:
             if r > 1e-6:  # Avoid division by zero at source
                 # Fundamental solution to Helmholtz equation: p = A * exp(i*k*r) / (4*pi*r)
                 pressure_values[i] = source_amp * np.exp(1j * k * r) / (4 * np.pi * r)
-            else:
+        else:
                 # At source point, use a finite value
                 pressure_values[i] = source_amp * (1 + 1j * k) / (4 * np.pi)
         
@@ -597,10 +597,10 @@ class HelmholtzSolver:
             
             cell_list = []
             for i in range(cells.shape[0]):
-                cell_vertices = []
+                    cell_vertices = []
                 for j in range(cells.shape[1]):
                     cell_vertices.append(int(cells[i, j]))
-                cell_list.append(cell_vertices)
+                    cell_list.append(cell_vertices)
             
             logger.info(f"Converted {len(cell_list)} cells")
             

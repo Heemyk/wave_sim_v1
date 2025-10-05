@@ -1,8 +1,7 @@
 {
-  "name": "acoustic-sim-gui",
+  "name": "acoustic-sim-web",
   "version": "0.1.0",
   "private": true,
-  "main": "public/electron.js",
   "homepage": "./",
   "dependencies": {
     "@react-three/drei": "^9.88.0",
@@ -14,10 +13,6 @@
     "@types/styled-components": "^5.1.0",
     "@types/three": "^0.158.0",
     "axios": "^1.6.0",
-    "concurrently": "^8.2.2",
-    "electron": "^27.3.11",
-    "electron-builder": "^24.13.3",
-    "electron-is-dev": "^3.0.1",
     "plotly.js": "^2.27.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -26,40 +21,13 @@
     "react-scripts": "5.0.1",
     "styled-components": "^6.1.0",
     "three": "^0.170.0",
-    "typescript": "^4.9.0",
-    "wait-on": "^7.2.0"
+    "typescript": "^4.9.0"
   },
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
-    "eject": "react-scripts eject",
-    "electron": "electron .",
-    "electron-dev": "concurrently \"npm start\" \"wait-on http://localhost:3000 && electron .\"",
-    "electron-simple": "npm run build && electron .",
-    "electron-pack": "npm run build && electron-builder",
-    "preelectron-pack": "npm run build"
-  },
-  "build": {
-    "appId": "com.acousticsim.gui",
-    "productName": "Acoustic Room Simulator",
-    "directories": {
-      "output": "dist"
-    },
-    "files": [
-      "build/**/*",
-      "node_modules/**/*",
-      "public/electron.js"
-    ],
-    "mac": {
-      "category": "public.app-category.utilities"
-    },
-    "win": {
-      "target": "nsis"
-    },
-    "linux": {
-      "target": "AppImage"
-    }
+    "eject": "react-scripts eject"
   },
   "eslintConfig": {
     "extends": [
