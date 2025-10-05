@@ -49,7 +49,7 @@ class FEMWorker:
                 element_order=request.mesh.element_order,
                 boundary_impedance=self._get_boundary_impedance(request)
             )
-            logger.info(f"Solver initialized with {self.solver.V.dofmap.index_map.size_global} DOFs")
+            logger.info(f"Solver initialized with {self.solver.mesh.n_nod} nodes")
             
             # Generate frequency list
             frequencies = self._generate_frequencies(request.simulation)
@@ -89,13 +89,13 @@ class FEMWorker:
                     "mesh_file": mesh_file,
                     "num_frequencies": len(frequencies),
                     "solver_info": {
-                        "num_dofs": self.solver.V.dofmap.index_map.size_global,
+                        "num_nodes": self.solver.mesh.n_nod,
                         "element_order": request.mesh.element_order,
                     }
                 },
                 performance_stats={
                     "total_frequencies": len(frequencies),
-                    "mesh_size": self.solver.V.dofmap.index_map.size_global,
+                    "mesh_size": self.solver.mesh.n_nod,
                 }
             )
             
@@ -168,6 +168,13 @@ class FEMWorker:
         
         return frequencies
     
+    def _get_sensor_positions(self, request: SimulationRequest) -> List[List[float]]:
+        """Extract sensor positions from request."""
+        sensor_positions = []
+        for sensor in request.output.sensors:
+            sensor_positions.append(sensor.position)
+        return sensor_positions
+    
     async def _compute_frequency(
         self, 
         frequency: float, 
@@ -194,18 +201,29 @@ class FEMWorker:
             sensor_positions.append(poi.position)
             sensor_ids.append(poi.id)
         
-        # Compute frequency response
+        # Compute frequency response with full field data
         results = self.solver.compute_frequency_response(
             [frequency], source_pos, sensor_positions,
             solver_type=request.simulation.solver_type
         )
         
-        # Extract sensor data
+        # Get additional visualization data if requested
+        visualization_data = {}
+        if request.output.field_snapshots or request.output.visualization_data:
+            visualization_data = self._get_visualization_data(frequency, source_pos)
+        
+        # Extract sensor data - map from solver sensor keys to actual sensor IDs
         sensor_data = {}
         for i, sensor_id in enumerate(sensor_ids):
-            sensor_key = f"sensor_{i}"
-            if sensor_key in results["sensor_data"]:
-                sensor_data[sensor_id] = results["sensor_data"][sensor_key][0]
+            solver_sensor_key = f"sensor_{i}"
+            if solver_sensor_key in results["sensor_data"]:
+                # Get the pressure value for this frequency (index 0 since we're computing one frequency at a time)
+                pressure_value = results["sensor_data"][solver_sensor_key][0]
+                sensor_data[sensor_id] = pressure_value
+                logger.info(f"Mapped {solver_sensor_key} -> {sensor_id}: {pressure_value} (type: {type(pressure_value)})")
+            else:
+                logger.warning(f"No data found for sensor key {solver_sensor_key}")
+                sensor_data[sensor_id] = 0.0 + 0.0j  # Default to zero
         
         return FrequencyResult(
             frequency=frequency,
@@ -213,7 +231,8 @@ class FEMWorker:
             metadata={
                 "progress": progress,
                 "source_position": source_pos,
-                "num_sensors": len(sensor_positions)
+                "num_sensors": len(sensor_positions),
+                "visualization_data": visualization_data
             }
         )
     
@@ -256,3 +275,44 @@ class FEMWorker:
             impulse_responses[sensor_id] = impulse_response.tolist()
         
         return impulse_responses
+    
+    def _get_visualization_data(self, frequency: float, source_pos: List[float]) -> Dict[str, Any]:
+        """Get visualization data for 3D rendering."""
+        try:
+            if self.solver is None:
+                logger.warning("Solver is None, cannot generate visualization data")
+                return {}
+            
+            logger.info(f"Getting mesh data from solver...")
+            # Get mesh data
+            mesh_data = self.solver.get_mesh_data()
+            logger.info(f"Mesh data retrieved: {len(mesh_data.get('vertices', []))} vertices")
+            
+            logger.info(f"Getting field data from solver...")
+            # Get field data
+            field_data = self.solver.get_field_data()
+            logger.info(f"Field data retrieved: {field_data.get('num_dofs', 0)} DOFs")
+            
+            visualization_data = {
+                "mesh_info": mesh_data,
+                "field_data": field_data,
+                "isosurfaces": [],  # TODO: Generate isosurfaces
+                "field_gradients": {},  # TODO: Compute gradients
+                "energy_distribution": {},  # TODO: Compute energy
+                "frequency": frequency,
+                "source_position": source_pos,
+                "metadata": {
+                    "extraction_time": "now",
+                    "data_quality": "full_resolution"
+                }
+            }
+            
+            logger.info(f"Generated visualization data for {frequency} Hz: {mesh_data.get('num_vertices', 0)} vertices, {field_data.get('num_dofs', 0)} DOFs")
+            return visualization_data
+            
+        except Exception as e:
+            logger.error(f"Error generating visualization data: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {}
+    

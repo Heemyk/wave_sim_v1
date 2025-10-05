@@ -30,9 +30,9 @@ echo "Installing Python dependencies..."
 pip install --upgrade pip
 pip install -e .
 
-# Install FEM dependencies (optional - comment out if you don't need FEM)
-echo "Installing FEM dependencies (this may take a while)..."
-pip install fenics dolfinx petsc4py slepc4py mpi4py gmsh
+# Install FEM dependencies (SfePy is Windows-compatible)
+echo "Installing FEM dependencies..."
+pip install sfepy meshio gmsh
 
 # Install frontend dependencies
 echo "Installing frontend dependencies..."

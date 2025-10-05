@@ -46,7 +46,8 @@ class ResultsIO:
             for freq_result in results.frequencies:
                 freq_data.append({
                     "frequency": freq_result.frequency,
-                    "sensor_data": {k: str(v) for k, v in freq_result.sensor_data.items()},
+                    "sensor_data": {k: {"real": v.real, "imag": v.imag} if isinstance(v, complex) else v 
+                                   for k, v in freq_result.sensor_data.items()},
                     "metadata": freq_result.metadata
                 })
             
@@ -99,9 +100,25 @@ class ResultsIO:
             
             frequency_results = []
             for freq_item in freq_data:
+                # Deserialize complex numbers properly
+                sensor_data = {}
+                for k, v in freq_item["sensor_data"].items():
+                    if isinstance(v, dict) and "real" in v and "imag" in v:
+                        # Complex number stored as {"real": x, "imag": y}
+                        sensor_data[k] = complex(v["real"], v["imag"])
+                    elif isinstance(v, str):
+                        # Handle string representation like "1+0.5j"
+                        try:
+                            sensor_data[k] = complex(v.replace('j', 'i'))
+                        except:
+                            sensor_data[k] = complex(v)
+                    else:
+                        # Already a number or complex
+                        sensor_data[k] = v
+                
                 frequency_results.append({
                     "frequency": freq_item["frequency"],
-                    "sensor_data": {k: complex(v) for k, v in freq_item["sensor_data"].items()},
+                    "sensor_data": sensor_data,
                     "metadata": freq_item["metadata"]
                 })
             

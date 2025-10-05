@@ -21,9 +21,9 @@
 
 ## Architecture Overview
 
-### Backend (Python + FEniCS)
+### Backend (Python + SfePy)
 - **FastAPI** server for REST API and WebSocket communication
-- **FEniCS/dolfinx** for FEM acoustic simulations
+- **SfePy** for FEM acoustic simulations (Windows-compatible)
 - **Job management** system for handling multiple simulations
 - **Results I/O** with HDF5/JSON storage
 
@@ -34,7 +34,7 @@
 - **WebSocket** connection for real-time updates
 
 ### Docker Setup
-- **Backend container**: FEniCS + FastAPI + all Python dependencies
+- **Backend container**: SfePy + FastAPI + all Python dependencies
 - **Frontend container**: React build served with nginx
 - **Redis**: Job queue and caching
 - **Jupyter**: Optional development environment
@@ -57,8 +57,8 @@ cd frontend && npm test
 
 1. **Backend setup:**
    ```bash
-   # Install FEniCS
-   conda install -c conda-forge fenics dolfinx petsc4py slepc4py
+   # Install SfePy and dependencies
+   pip install sfepy meshio gmsh
    
    # Install Python dependencies
    pip install -e .
@@ -134,9 +134,9 @@ simulation:
 The current implementation is CPU-based but designed for easy GPU migration:
 
 ### Current CPU Implementation
-- FEniCS uses PETSc for linear algebra
+- SfePy uses SciPy for linear algebra
 - Direct solvers (LU) for small problems
-- Iterative solvers (GMRES) for large problems
+- Iterative solvers (CG/GMRES) for large problems
 
 ### Future GPU Implementation
 1. **Replace PETSc with CuPy/CuBLAS** for GPU linear algebra
@@ -147,8 +147,8 @@ The current implementation is CPU-based but designed for easy GPU migration:
 ### Migration Path
 ```python
 # Current (CPU)
-from petsc4py import PETSc
-solver = PETSc.KSP().create()
+from scipy.sparse.linalg import spsolve
+solver = spsolve(A, b)
 
 # Future (GPU)
 import cupy as cp
@@ -159,10 +159,12 @@ solver = cp.linalg.solve(A_gpu, b_gpu)
 
 ### Common Issues
 
-1. **FEniCS Import Error**
+1. **SfePy Import Error**
    ```bash
-   # Solution: Install via conda-forge
-   conda install -c conda-forge fenics dolfinx
+   # Solution: Install via pip
+   pip install sfepy
+   # Or via conda-forge
+   conda install -c conda-forge sfepy
    ```
 
 2. **Memory Issues**

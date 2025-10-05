@@ -28,7 +28,16 @@ class JobManager:
     async def get_job_status(self, job_id: str) -> Optional[JobStatus]:
         """Get job status."""
         async with self._lock:
-            return self.active_jobs.get(job_id)
+            # Check active jobs first
+            if job_id in self.active_jobs:
+                return self.active_jobs[job_id]
+            
+            # Check job history if not in active jobs
+            for job in self.job_history:
+                if job.job_id == job_id:
+                    return job
+            
+            return None
     
     async def update_job_status(
         self, 
@@ -60,9 +69,28 @@ class JobManager:
     async def cancel_job(self, job_id: str) -> bool:
         """Cancel a job."""
         async with self._lock:
+            # Check active jobs first
             if job_id in self.active_jobs:
-                await self.update_job_status(job_id, "cancelled", 0.0, "Job cancelled")
+                # Update job status directly without recursive lock
+                job = self.active_jobs[job_id]
+                job.status = "cancelled"
+                job.progress = 0.0
+                job.message = "Job cancelled"
+                job.completed_at = datetime.now().isoformat()
+                
+                # Move to history
+                self.job_history.append(job)
+                del self.active_jobs[job_id]
+                
+                logger.info(f"Job {job_id} cancelled")
                 return True
+            
+            # Check if job is already in history (can't cancel completed jobs)
+            for job in self.job_history:
+                if job.job_id == job_id:
+                    logger.info(f"Job {job_id} already completed, cannot cancel")
+                    return False
+            
             return False
     
     async def list_jobs(self) -> List[JobStatus]:
@@ -74,7 +102,16 @@ class JobManager:
     async def cleanup(self):
         """Cleanup on shutdown."""
         async with self._lock:
-            # Cancel all active jobs
-            for job_id in list(self.active_jobs.keys()):
-                await self.cancel_job(job_id)
+            # Cancel all active jobs directly without recursive calls
+            for job_id, job in list(self.active_jobs.items()):
+                job.status = "cancelled"
+                job.progress = 0.0
+                job.message = "Job cancelled during shutdown"
+                job.completed_at = datetime.now().isoformat()
+                
+                # Move to history
+                self.job_history.append(job)
+            
+            # Clear active jobs
+            self.active_jobs.clear()
             logger.info("Job manager cleanup complete")

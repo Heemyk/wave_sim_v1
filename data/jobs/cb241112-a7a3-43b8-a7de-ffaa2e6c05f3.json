@@ -1,0 +1,11 @@
+{
+  "job_id": "cb241112-a7a3-43b8-a7de-ffaa2e6c05f3",
+  "status": "completed",
+  "progress": 1.0,
+  "message": "Simulation completed (PERSISTENT TEST MODE)",
+  "created_at": "2025-10-03T21:44:09.395763",
+  "started_at": "2025-10-03T21:44:09.419780",
+  "completed_at": "2025-10-03T21:44:13.523003",
+  "error": null,
+  "results": null
+}

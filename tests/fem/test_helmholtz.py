@@ -1,19 +1,21 @@
 """
-Test script for the Helmholtz equation solver.
+Test script for the SfePy-based Helmholtz equation solver.
 
 This script demonstrates the functionality of the HelmholtzSolver class by:
 1. Creating a simple box-shaped room mesh using GMSH
-2. Setting up the finite element solver with appropriate boundary conditions
+2. Setting up the SfePy finite element solver with appropriate boundary conditions
 3. Computing frequency response at multiple sensor positions
 4. Comparing results with analytical solutions where possible
 5. Generating visualization plots of the results
 
 The test validates the core acoustic simulation capabilities including:
-- Mesh generation and loading
-- Finite element discretization
+- Mesh generation and loading with SfePy
+- Finite element discretization using SfePy
 - Linear system assembly and solving
 - Frequency domain analysis
 - Result evaluation and visualization
+
+Note: This test suite has been updated for SfePy (Windows-compatible) instead of FEniCS.
 """
 
 # Standard library imports
@@ -25,7 +27,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Add project root to Python path for imports
-sys.path.append(str(Path(__file__).parent.parent))
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
 
 # Import the Helmholtz solver and mesh generation utilities
 from fem.helmholtz_solver import HelmholtzSolver, create_simple_box_mesh
@@ -57,8 +60,8 @@ def test_helmholtz_solver():
     mesh_file = create_simple_box_mesh([4.0, 3.0, 2.5], h=0.2)
     print(f"Mesh created: {mesh_file}")
     
-    # Initialize the finite element solver with physical parameters
-    print("Initializing solver...")
+    # Initialize the SfePy finite element solver with physical parameters
+    print("Initializing SfePy solver...")
     solver = HelmholtzSolver(
         mesh_file=mesh_file,           # Use the generated mesh file
         element_order=1,               # Linear finite elements (good balance of speed/accuracy)
@@ -87,7 +90,8 @@ def test_helmholtz_solver():
     # Print results
     print("\nResults:")
     print(f"Frequencies: {results['frequencies']}")
-    print(f"Number of DOFs: {results['metadata']['mesh_info']['num_dofs']}")
+    print(f"Number of nodes: {results['metadata']['mesh_info']['num_nodes']}")
+    print(f"Element order: {results['metadata']['mesh_info']['element_order']}")
     
     for sensor_id, data in results['sensor_data'].items():
         print(f"\n{sensor_id}:")
@@ -125,8 +129,8 @@ def test_helmholtz_solver():
 
 
 def test_analytic_comparison():
-    """Compare with analytic solution for a simple case."""
-    print("\nTesting against analytic solution...")
+    """Compare with analytic solution for a simple case using SfePy."""
+    print("\nTesting against analytic solution with SfePy...")
     
     # Create a 1D case (rectangular duct)
     mesh_file = create_simple_box_mesh([2.0, 0.1, 0.1], h=0.05)  # Very thin box

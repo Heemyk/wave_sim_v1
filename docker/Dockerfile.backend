@@ -1,42 +1,29 @@
-# Backend Dockerfile for FEniCS + FastAPI
-FROM continuumio/miniconda3:latest
+# Backend Dockerfile for SfePy + FastAPI
+FROM python:3.11-slim
 
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
-ENV CONDA_ALWAYS_YES=true
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
     git \
-    libopenmpi-dev \
     libhdf5-dev \
-    libnetcdf-dev \
     libgl1-mesa-glx \
     libglu1-mesa \
     libxrender1 \
     libxext6 \
     libsm6 \
     libfontconfig1 \
+    libblas-dev \
+    liblapack-dev \
+    gfortran \
     && rm -rf /var/lib/apt/lists/*
 
-# Create conda environment with FEniCS
-RUN conda create -n acoustic-sim python=3.11 -y
-SHELL ["conda", "run", "-n", "acoustic-sim", "/bin/bash", "-c"]
-
-# Install FEniCS via conda-forge (more reliable than pip)
-RUN conda install -c conda-forge \
-    fenics-dolfinx \
-    petsc4py \
-    slepc4py \
-    mpi4py \
-    gmsh \
-    meshio \
-    h5py \
-    netcdf4 \
-    -y
+# Create application directory
+WORKDIR /app
 
 # Install Python dependencies
 RUN pip install --no-cache-dir \
@@ -51,10 +38,11 @@ RUN pip install --no-cache-dir \
     python-multipart==0.0.6 \
     aiofiles==23.2.1 \
     redis==5.0.1 \
-    rq==1.15.1
-
-# Set working directory
-WORKDIR /app
+    rq==1.15.1 \
+    sfepy \
+    meshio \
+    gmsh \
+    h5py
 
 # Copy requirements first for better caching
 COPY pyproject.toml ./
@@ -75,4 +63,4 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the application
-CMD ["conda", "run", "-n", "acoustic-sim", "uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

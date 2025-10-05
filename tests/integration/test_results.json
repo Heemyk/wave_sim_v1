@@ -1,0 +1,9 @@
+{
+  "backend_health": true,
+  "workflow_test": null,
+  "visualization_test": null,
+  "error_handling_test": null,
+  "persistence_test": null,
+  "overall_success": false,
+  "error": "Job submission failed: 422 - {\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"sources\",0,\"id\"],\"msg\":\"Field required\",\"input\":{\"position\":[2.0,1.5,1.0],\"signal\":{\"type\":\"sine\",\"frequency\":100.0,\"amplitude\":1.0}}},{\"type\":\"missing\",\"loc\":[\"body\",\"mesh\"],\"msg\":\"Field required\",\"input\":{\"name\":\"Complete Workflow Test\",\"room\":{\"type\":\"box\",\"dimensions\":[4.0,3.0,2.5],\"center\":[0.0,0.0,0.0]},\"boundaries\":{\"walls\":{\"alpha\":0.1},\"floor\":{\"alpha\":0.2},\"ceiling\":{\"alpha\":0.15}},\"sources\":[{\"position\":[2.0,1.5,1.0],\"signal\":{\"type\":\"sine\",\"frequency\":100.0,\"amplitude\":1.0}}],\"listeners\":[{\"id\":\"listener_1\",\"position\":[1.0,1.0,1.0]},{\"id\":\"listener_2\",\"position\":[3.0,2.0,1.5]}],\"simulation\":{\"fmin\":100.0,\"fmax\":200.0,\"fstep\":100.0,\"element_order\":1}}},{\"type\":\"missing\",\"loc\":[\"body\",\"output\"],\"msg\":\"Field required\",\"input\":{\"name\":\"Complete Workflow Test\",\"room\":{\"type\":\"box\",\"dimensions\":[4.0,3.0,2.5],\"center\":[0.0,0.0,0.0]},\"boundaries\":{\"walls\":{\"alpha\":0.1},\"floor\":{\"alpha\":0.2},\"ceiling\":{\"alpha\":0.15}},\"sources\":[{\"position\":[2.0,1.5,1.0],\"signal\":{\"type\":\"sine\",\"frequency\":100.0,\"amplitude\":1.0}}],\"listeners\":[{\"id\":\"listener_1\",\"position\":[1.0,1.0,1.0]},{\"id\":\"listener_2\",\"position\":[3.0,2.0,1.5]}],\"simulation\":{\"fmin\":100.0,\"fmax\":200.0,\"fstep\":100.0,\"element_order\":1}}}]}"
+}

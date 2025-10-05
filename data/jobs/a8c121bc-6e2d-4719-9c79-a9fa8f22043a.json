@@ -1,0 +1,11 @@
+{
+  "job_id": "a8c121bc-6e2d-4719-9c79-a9fa8f22043a",
+  "status": "cancelled",
+  "progress": 0.0,
+  "message": "Job cancelled during shutdown",
+  "created_at": "2025-10-03T22:36:18.749540",
+  "started_at": null,
+  "completed_at": "2025-10-03T22:37:12.565827",
+  "error": null,
+  "results": null
+}

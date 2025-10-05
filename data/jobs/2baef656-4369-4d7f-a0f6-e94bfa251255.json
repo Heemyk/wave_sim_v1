@@ -1,0 +1,11 @@
+{
+  "job_id": "2baef656-4369-4d7f-a0f6-e94bfa251255",
+  "status": "pending",
+  "progress": 0.0,
+  "message": "Job submitted",
+  "created_at": "2025-10-04T21:18:47.824295",
+  "started_at": null,
+  "completed_at": null,
+  "error": null,
+  "results": null
+}

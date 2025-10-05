@@ -1,4 +1,7 @@
-"""FastAPI backend for acoustic room simulator."""
+"""FastAPI backend for acoustic room simulator - PERSISTENT TEST VERSION.
+
+This version uses persistent job management to survive backend restarts.
+"""
 
 import asyncio
 import json
@@ -27,7 +30,6 @@ try:
     )
     from backend.app.jobs.persistent_job_manager import PersistentJobManager
     from backend.app.io.results_io import ResultsIO
-    from backend.app.workers.fem_worker import FEMWorker
 except ImportError as e:
     logging.error(f"Import error: {e}")
     logging.error(f"Python path: {sys.path}")
@@ -48,15 +50,14 @@ logger = logging.getLogger(__name__)
 # Global variables for app state
 job_manager = None
 results_io = None
-fem_worker = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
-    global job_manager, results_io, fem_worker
+    global job_manager, results_io
     
     # Startup
-    logger.info("Starting Acoustic Room Simulator backend...")
+    logger.info("Starting Acoustic Room Simulator backend (PERSISTENT TEST MODE)...")
     
     # Create data directories
     data_dir = Path("data")
@@ -64,14 +65,14 @@ async def lifespan(app: FastAPI):
     (data_dir / "meshes").mkdir(exist_ok=True)
     (data_dir / "results").mkdir(exist_ok=True)
     (data_dir / "cache").mkdir(exist_ok=True)
+    (data_dir / "jobs").mkdir(exist_ok=True)  # Job persistence directory
     Path("logs").mkdir(exist_ok=True)
     
-    # Initialize components
+    # Initialize components with persistence
     job_manager = PersistentJobManager()
     results_io = ResultsIO()
-    fem_worker = FEMWorker()
     
-    logger.info("Backend startup complete")
+    logger.info("Backend startup complete (PERSISTENT TEST MODE)")
     
     yield
     
@@ -83,8 +84,8 @@ async def lifespan(app: FastAPI):
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Acoustic Room Simulator",
-    description="FEM-based acoustic simulation with geometric acoustics",
+    title="Acoustic Room Simulator (PERSISTENT TEST)",
+    description="FEM-based acoustic simulation with persistent job management - TEST MODE",
     version="0.1.0",
     lifespan=lifespan
 )
@@ -124,13 +125,10 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-# Startup and shutdown are now handled by the lifespan manager
-
-
 @app.get("/")
 async def root():
     """Root endpoint."""
-    return {"message": "Acoustic Room Simulator API", "version": "0.1.0"}
+    return {"message": "Acoustic Room Simulator API (PERSISTENT TEST MODE)", "version": "0.1.0"}
 
 
 @app.get("/health")
@@ -141,8 +139,10 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "active_jobs": len(job_manager.active_jobs) if job_manager else 0,
+        "total_jobs": len(job_manager.active_jobs) + len(job_manager.job_history) if job_manager else 0,
         "python_path": sys.path,
-        "working_directory": str(Path.cwd())
+        "working_directory": str(Path.cwd()),
+        "mode": "PERSISTENT_TEST"
     }
 
 
@@ -152,7 +152,7 @@ async def submit_simulation(
     background_tasks: BackgroundTasks
 ) -> JobStatus:
     """
-    Submit a new simulation job.
+    Submit a new simulation job (PERSISTENT TEST MODE - no background processing).
     
     Args:
         request: Simulation configuration
@@ -170,17 +170,19 @@ async def submit_simulation(
             job_id=job_id,
             status="pending",
             progress=0.0,
-            message="Job submitted",
+            message="Job submitted (PERSISTENT TEST MODE - no processing)",
             created_at=datetime.now().isoformat()
         )
         
-        # Submit job to manager
+        # Submit job to manager (will persist to disk)
         global job_manager
         await job_manager.submit_job(job_id, request, job_status)
         
-        # Note: Job processing will be started manually via /api/simulate/start/{job_id}
+        # NOTE: In TEST MODE, we don't start background processing
+        # This allows us to test job management without simulation complexity
+        # background_tasks.add_task(process_simulation_job, job_id, request)
         
-        logger.info(f"Submitted simulation job {job_id}")
+        logger.info(f"Submitted simulation job {job_id} (PERSISTENT TEST MODE)")
         return job_status
         
     except Exception as e:
@@ -190,7 +192,9 @@ async def submit_simulation(
 
 @app.post("/api/simulate/start/{job_id}")
 async def start_simulation(job_id: str, background_tasks: BackgroundTasks):
-    """Start processing for a specific job."""
+    """
+    Start processing for a specific job (PERSISTENT TEST MODE manual trigger).
+    """
     try:
         global job_manager
         status = await job_manager.get_job_status(job_id)
@@ -198,24 +202,14 @@ async def start_simulation(job_id: str, background_tasks: BackgroundTasks):
             raise HTTPException(status_code=404, detail="Job not found")
         
         if status.status != "pending":
-            raise HTTPException(status_code=400, detail=f"Job is not pending (current status: {status.status})")
+            raise HTTPException(status_code=400, detail="Job is not in pending status")
         
-        # Get the job request from the job manager
-        job_request = await job_manager.get_job_request(job_id)
-        if job_request is None:
-            raise HTTPException(status_code=404, detail="Job request not found")
+        # Start background processing
+        background_tasks.add_task(process_simulation_job, job_id, None)
         
-        # Start job processing in background
-        background_tasks.add_task(process_simulation_job, job_id, job_request)
-        
-        # Update job status
-        await job_manager.update_job_status(job_id, "running", 0.0, "Processing started")
-        
-        logger.info(f"Started simulation job {job_id}")
-        return {"message": "Job processing started", "job_id": job_id}
+        return {"message": f"Started processing job {job_id}"}
         
     except HTTPException:
-        # Re-raise HTTP exceptions as-is
         raise
     except Exception as e:
         logger.error(f"Error starting simulation: {e}")
@@ -285,114 +279,15 @@ async def list_jobs():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/jobs/{job_id}/mesh")
-async def get_job_mesh(job_id: str):
-    """Get mesh geometry data for a job."""
+@app.delete("/api/jobs/cleanup")
+async def cleanup_old_jobs(days: int = 7):
+    """Clean up old completed jobs."""
     try:
-        global results_io
-        results = await results_io.load_results(job_id)
-        if results is None:
-            raise HTTPException(status_code=404, detail="Job results not found")
-        
-        # Extract mesh data from first frequency result
-        if results.frequencies and len(results.frequencies) > 0:
-            freq_result = results.frequencies[0]
-            visualization_data = freq_result.metadata.get("visualization_data", {})
-            mesh_info = visualization_data.get("mesh_info", {})
-            
-            return {
-                "job_id": job_id,
-                "mesh": mesh_info,
-                "metadata": {
-                    "frequency": freq_result.frequency,
-                    "num_frequencies": len(results.frequencies)
-                }
-            }
-        else:
-            raise HTTPException(status_code=404, detail="No frequency results found")
-            
-    except HTTPException:
-        raise
+        global job_manager
+        await job_manager.cleanup_old_jobs(days)
+        return {"message": f"Cleaned up jobs older than {days} days"}
     except Exception as e:
-        logger.error(f"Error getting mesh data: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/jobs/{job_id}/field/{frequency}")
-async def get_field_data(job_id: str, frequency: float):
-    """Get pressure field data for a specific frequency."""
-    try:
-        global results_io
-        results = await results_io.load_results(job_id)
-        if results is None:
-            raise HTTPException(status_code=404, detail="Job results not found")
-        
-        # Find the frequency result
-        freq_result = None
-        for fr in results.frequencies:
-            if abs(fr.frequency - frequency) < 1e-6:  # Float comparison
-                freq_result = fr
-                break
-        
-        if freq_result is None:
-            raise HTTPException(status_code=404, detail=f"Frequency {frequency} Hz not found")
-        
-        # Extract field data
-        visualization_data = freq_result.metadata.get("visualization_data", {})
-        field_data = visualization_data.get("field_data", {})
-        
-        return {
-            "job_id": job_id,
-            "frequency": frequency,
-            "field_data": field_data,
-            "sensor_data": freq_result.sensor_data
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting field data: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/jobs/{job_id}/visualization")
-async def get_visualization_data(job_id: str):
-    """Get complete visualization data for a job."""
-    try:
-        global results_io
-        results = await results_io.load_results(job_id)
-        if results is None:
-            raise HTTPException(status_code=404, detail="Job results not found")
-        
-        # Collect all visualization data
-        visualization_summary = {
-            "job_id": job_id,
-            "frequencies": [],
-            "mesh_info": {},
-            "metadata": results.metadata
-        }
-        
-        for freq_result in results.frequencies:
-            visualization_data = freq_result.metadata.get("visualization_data", {})
-            
-            freq_data = {
-                "frequency": freq_result.frequency,
-                "sensor_data": freq_result.sensor_data,
-                "field_data": visualization_data.get("field_data", {}),
-                "mesh_info": visualization_data.get("mesh_info", {})
-            }
-            visualization_summary["frequencies"].append(freq_data)
-            
-            # Use mesh info from first frequency
-            if not visualization_summary["mesh_info"]:
-                visualization_summary["mesh_info"] = visualization_data.get("mesh_info", {})
-        
-        return visualization_summary
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting visualization data: {e}")
+        logger.error(f"Error cleaning up jobs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -445,34 +340,68 @@ async def get_example_config(example_name: str):
 
 
 async def process_simulation_job(job_id: str, request: SimulationRequest):
-    """Process a simulation job in the background."""
-    global job_manager, results_io, fem_worker
+    """Process a simulation job in the background (PERSISTENT TEST MODE)."""
+    global job_manager, results_io
     
     try:
-        logger.info(f"Starting simulation job {job_id}")
+        logger.info(f"Starting simulation job {job_id} (PERSISTENT TEST MODE)")
         
         # Update job status
         await job_manager.update_job_status(
-            job_id, "running", 0.0, "Initializing simulation"
+            job_id, "running", 0.0, "Initializing simulation (PERSISTENT TEST MODE)"
         )
         
-        # Use global FEM worker
-        if fem_worker is None:
-            fem_worker = FEMWorker()
+        # Simulate some work
+        await asyncio.sleep(2)
         
-        # Process simulation with real FEM computation
-        logger.info(f"Running real FEM simulation for job {job_id}")
-        results = await fem_worker.run_simulation(request)
+        await job_manager.update_job_status(
+            job_id, "running", 0.5, "Processing simulation (PERSISTENT TEST MODE)"
+        )
+        
+        # Simulate more work
+        await asyncio.sleep(2)
+        
+        # Create mock results
+        mock_result = SimulationResult(
+            job_id=job_id,
+            config=request or SimulationRequest(**{
+                "name": "Test Job",
+                "room": {"type": "box", "dimensions": [2.0, 2.0, 2.0], "center": [0.0, 0.0, 0.0]},
+                "boundaries": {"walls": {"alpha": 0.0}, "floor": {"alpha": 0.0}, "ceiling": {"alpha": 0.0}},
+                "sources": [],
+                "mesh": {"element_order": 1, "target_h": 0.2, "refinement_level": 0, "adaptive": False, "quality_threshold": 0.3},
+                "simulation": {"type": "frequency_domain", "fmin": 100.0, "fmax": 200.0, "df": 50.0, "solver_type": "direct", "tolerance": 1e-6, "max_iterations": 1000},
+                "output": {"sensors": [], "points_of_interest": [], "field_snapshots": False, "frequency_response": True, "impulse_response": False, "visualization_data": False, "format": "json", "compression": False},
+                "parallel_jobs": 1
+            }),
+            frequencies=[
+                FrequencyResult(
+                    frequency=100.0,
+                    sensor_data={"test_sensor": 1.0 + 0.5j},
+                    metadata={"dofs": 100}
+                ),
+                FrequencyResult(
+                    frequency=150.0,
+                    sensor_data={"test_sensor": 0.8 + 0.3j},
+                    metadata={"dofs": 100}
+                )
+            ],
+            metadata={
+                "mesh_info": {"num_dofs": 100, "num_elements": 200},
+                "performance": {"solve_time": 1.5},
+                "persistent_test_mode": True
+            }
+        )
         
         # Save results
-        await results_io.save_results(job_id, results)
+        await results_io.save_results(job_id, mock_result)
         
         # Update job status
         await job_manager.update_job_status(
-            job_id, "completed", 1.0, "Simulation completed"
+            job_id, "completed", 1.0, "Simulation completed (PERSISTENT TEST MODE)"
         )
         
-        logger.info(f"Completed simulation job {job_id}")
+        logger.info(f"Completed simulation job {job_id} (PERSISTENT TEST MODE)")
         
     except Exception as e:
         logger.error(f"Error processing job {job_id}: {e}")
@@ -485,7 +414,7 @@ async def process_simulation_job(job_id: str, request: SimulationRequest):
 
 if __name__ == "__main__":
     uvicorn.run(
-        "backend.app.main:app",
+        "backend.app.main_persistent_test:app",
         host="0.0.0.0",
         port=8000,
         reload=True,
