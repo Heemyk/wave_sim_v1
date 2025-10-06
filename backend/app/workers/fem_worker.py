@@ -151,10 +151,13 @@ class FEMWorker:
                 # Convert absorption coefficient to impedance
                 alpha = boundary_config.alpha
                 if alpha > 0:
-                    Z = rho * c / (1 + np.sqrt(1 - alpha))
+                    # Correct Robin boundary condition impedance for acoustics
+                    # Z = rho * c / alpha (for absorption-dominated boundaries)
+                    Z = rho * c / alpha
                     impedance[boundary_name] = Z
                 else:
-                    impedance[boundary_name] = 0.0  # Rigid boundary
+                    # Very high impedance for rigid boundaries (alpha=0)
+                    impedance[boundary_name] = 1e6  # Large but finite value
         
         return impedance
     

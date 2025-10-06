@@ -1,0 +1,11 @@
+{
+  "job_id": "83eea24f-e129-445c-814f-03f0f478a4eb",
+  "status": "completed",
+  "progress": 1.0,
+  "message": "Simulation completed",
+  "created_at": "2025-10-05T19:43:48.356722",
+  "started_at": "2025-10-05T19:43:48.370241",
+  "completed_at": "2025-10-05T19:44:00.678759",
+  "error": null,
+  "results": null
+}

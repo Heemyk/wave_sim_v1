@@ -29,6 +29,7 @@ try:
     from backend.app.jobs.persistent_job_manager import PersistentJobManager
     from backend.app.io.results_io import ResultsIO
     from backend.app.workers.fem_worker import FEMWorker
+    from fem.helmholtz_solver import HelmholtzSolver
 except ImportError as e:
     logging.error(f"Import error: {e}")
     logging.error(f"Python path: {sys.path}")
@@ -426,21 +427,865 @@ async def get_visualization_data(job_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/unified_simulation")
+async def compute_unified_simulation_direct(request: dict):
+    """Compute both frequency domain and time domain simulations directly without requiring an existing job."""
+    try:
+        logger.info(f"DIRECT UNIFIED SIMULATION REQUEST")
+        logger.info(f"Request data: {request}")
+        
+        # Get parameters from request
+        sensor_positions = request.get("sensor_positions", [[0.0, 0.0, 0.0]])
+        source_position = request.get("source_position", [1.0, 1.0, 1.0])
+        source_frequency = request.get("source_frequency", 440.0)
+        sample_rate = request.get("sample_rate", 44100)
+        duration = request.get("duration", 2.0)
+        max_frequency = request.get("max_frequency", 20000.0)
+        num_frequencies = request.get("num_frequencies", 100)
+        mesh_file = request.get("mesh_file", "data/meshes/box_Frontend Test Simulation.msh")
+        element_order = request.get("element_order", 1)
+        boundary_absorption = request.get("boundary_impedance", {})
+        
+        # Convert absorption coefficients to impedances
+        import numpy as np
+        c = 343.0  # Speed of sound
+        rho = 1.225  # Air density
+        boundary_impedance = {}
+        
+        for boundary_name, alpha in boundary_absorption.items():
+            if alpha > 0:
+                # Correct Robin boundary condition impedance for acoustics
+                # Z = rho * c / alpha (for absorption-dominated boundaries)
+                Z = rho * c / alpha
+                boundary_impedance[boundary_name] = Z
+                logger.info(f"Boundary {boundary_name}: alpha={alpha:.3f} -> Z={Z:.0f}")
+            else:
+                # Very high impedance for rigid boundaries (alpha=0)
+                boundary_impedance[boundary_name] = 1e6  # Large but finite value
+                logger.info(f"Boundary {boundary_name}: rigid (alpha=0) -> Z={1e6:.0e}")
+        
+        # Get custom audio data
+        custom_audio_data = request.get("custom_audio_data", None)
+        custom_audio_filename = request.get("custom_audio_filename", None)
+        use_custom_audio = request.get("use_custom_audio", False)
+        
+        logger.info(f"Parameters: sensors={len(sensor_positions)}, source={source_position}")
+        logger.info(f"Audio: {source_frequency}Hz, {sample_rate}Hz, {duration}s, max_freq={max_frequency}Hz")
+        logger.info(f"Frequency analysis: {num_frequencies} frequencies")
+        
+        if use_custom_audio and custom_audio_data and custom_audio_filename:
+            logger.info(f"Using custom audio file: {custom_audio_filename} ({len(custom_audio_data)} samples, {duration:.2f}s)")
+        else:
+            logger.info("Using default sine wave source signal")
+        
+        # Initialize solver
+        solver = HelmholtzSolver(
+            mesh_file=mesh_file,
+            element_order=element_order,
+            boundary_impedance=boundary_impedance
+        )
+        
+        # Compute frequency domain analysis
+        logger.info(f"Computing frequency domain analysis")
+        import numpy as np
+        frequency_data = {}
+        
+        if use_custom_audio and custom_audio_data:
+            # Extract frequency content from custom audio
+            logger.info("Analyzing custom audio frequency content")
+            audio_array = np.array(custom_audio_data, dtype=np.float32)
+            
+            # Compute FFT to get frequency spectrum
+            fft_result = np.fft.fft(audio_array)
+            freqs = np.fft.fftfreq(len(audio_array), 1/sample_rate)
+            
+            # Get only positive frequencies
+            positive_mask = freqs > 0
+            positive_freqs = freqs[positive_mask]
+            positive_fft = fft_result[positive_mask]
+            
+            # Get magnitude spectrum
+            magnitude_spectrum = np.abs(positive_fft)
+            
+            # Find significant frequencies (above threshold)
+            threshold = np.max(magnitude_spectrum) * 0.01  # 1% of max amplitude
+            significant_mask = magnitude_spectrum > threshold
+            significant_freqs = positive_freqs[significant_mask]
+            significant_magnitudes = magnitude_spectrum[significant_mask]
+            
+            logger.info(f"Found {len(significant_freqs)} significant frequencies in audio")
+            if len(significant_freqs) > 0:
+                logger.info(f"Frequency range: {np.min(significant_freqs):.1f} - {np.max(significant_freqs):.1f} Hz")
+            
+            # Use significant frequencies for simulation (limit to num_frequencies)
+            if len(significant_freqs) > 0:
+                frequencies_to_simulate = significant_freqs[:num_frequencies]
+                amplitudes_to_use = significant_magnitudes[:num_frequencies]
+            else:
+                # Fallback to default if no significant frequencies found
+                frequencies_to_simulate = np.linspace(100, max_frequency, num_frequencies)
+                amplitudes_to_use = np.ones(num_frequencies)
+        else:
+            # Use default frequency range
+            frequencies_to_simulate = np.linspace(100, max_frequency, num_frequencies)
+            amplitudes_to_use = np.ones(num_frequencies)  # Equal amplitude for all frequencies
+        
+        logger.info(f"Simulating {len(frequencies_to_simulate)} frequencies")
+        
+        for i, freq in enumerate(frequencies_to_simulate):
+            if i % 10 == 0:
+                logger.info(f"Computing frequency {i+1}/{len(frequencies_to_simulate)}: {freq:.1f} Hz")
+            
+            try:
+                # Set up the solver for this frequency
+                c = 343.0  # Speed of sound
+                k = 2 * np.pi * freq / c
+                solver._current_k = k
+                solver._current_source_pos = source_position
+                
+                # Use amplitude from audio spectrum if available
+                source_amplitude = amplitudes_to_use[i] if i < len(amplitudes_to_use) else 1.0
+                solver._current_source_amp = float(source_amplitude)
+                
+                # Solve Helmholtz equation for this frequency
+                pressure_values = solver.solve(solver_type="direct")
+                
+                # Evaluate at sensor positions
+                sensor_responses = []
+                for sensor_pos in sensor_positions:
+                    response = solver.evaluate_at_points(pressure_values, [sensor_pos])
+                    sensor_responses.append(complex(response[0]).real) # Convert to real for JSON
+                
+                frequency_data[float(freq)] = {
+                    "frequency": float(freq),
+                    "pressure_field": pressure_values.real.tolist(),  # Convert complex to real
+                    "sensor_responses": sensor_responses,
+                    "source_amplitude": float(source_amplitude)
+                }
+                
+            except Exception as e:
+                logger.warning(f"Failed to solve at frequency {freq:.1f} Hz: {e}")
+                frequency_data[float(freq)] = {
+                    "frequency": float(freq),
+                    "pressure_field": None,
+                    "sensor_responses": [0.0] * len(sensor_positions),
+                    "source_amplitude": 0.0
+                }
+        
+        # Compute time domain simulation using NEW independent solver
+        logger.info("Computing time domain simulation with NEW independent solver")
+        
+        # Convert custom audio data to numpy array if available
+        custom_audio_np = None
+        if use_custom_audio and custom_audio_data:
+            custom_audio_np = np.array(custom_audio_data, dtype=np.float32)
+            logger.info(f"Using custom audio signal for time domain: {custom_audio_np.shape} samples")
+        
+        # Use NEW independent time-domain solver instead of old IFFT method
+        logger.info("Computing time domain simulation with NEW independent solver")
+        
+        # Create source signal from custom audio or default
+        source_signal_array = None
+        if use_custom_audio and custom_audio_data:
+            source_signal_array = custom_audio_np
+            logger.info(f"Using custom audio: {len(source_signal_array)} samples")
+        else:
+            # Create default sine wave for testing
+            num_samples = int(duration * sample_rate)
+            t = np.linspace(0, duration, num_samples)
+            source_signal_array = np.sin(2 * np.pi * source_frequency * t).astype(np.float32)
+            logger.info(f"Using default sine wave: {source_frequency}Hz, {len(source_signal_array)} samples")
+        
+        # Normalize source signal for proper FEM simulation
+        # FEM needs source amplitudes in a reasonable range for numerical stability
+        source_max = np.max(np.abs(source_signal_array))
+        if source_max > 0:
+            # Normalize to reasonable FEM amplitude range (not too small, not too large)
+            target_source_amplitude = 1.0  # Good range for FEM numerical stability
+            source_signal_array = source_signal_array * (target_source_amplitude / source_max)
+            logger.info(f"Normalized source signal: original max={source_max:.6f}, new max={target_source_amplitude}")
+        else:
+            logger.warning("Source signal is all zeros - FEM simulation may not work properly")
+        
+        # Use the NEW independent time-domain solver
+        time_domain_data = solver.solve_time_domain(
+            source_position=source_position,
+            sensor_positions=sensor_positions,
+            source_signal=source_signal_array,
+            sample_rate=sample_rate,
+            duration=duration
+        )
+        
+        logger.info(f"Direct unified simulation completed successfully")
+        
+        # Get mesh data for visualization
+        logger.info("Extracting mesh data for frontend visualization")
+        mesh_data = solver.get_mesh_data()
+        
+        # Combine both results
+        unified_data = {
+            "frequency_data": frequency_data,
+            "time_domain_data": time_domain_data,
+            "mesh_data": mesh_data,  # Include mesh data directly
+            "parameters": {
+                "num_frequencies": num_frequencies,
+                "frequency_range": [float(frequencies_to_simulate[0]), float(frequencies_to_simulate[-1])],
+                "sensor_positions": sensor_positions,
+                "source_position": source_position,
+                "source_frequency": source_frequency,
+                "sample_rate": sample_rate,
+                "duration": duration,
+                "max_frequency": max_frequency
+            }
+        }
+        
+        # Debug: Check for complex numbers before JSON serialization
+        import json
+        try:
+            json.dumps(unified_data)
+            logger.info("Unified data is JSON serializable")
+        except TypeError as e:
+            logger.error(f"JSON serialization error: {e}")
+            # Find and fix complex numbers
+            def fix_complex(obj):
+                if isinstance(obj, dict):
+                    return {k: fix_complex(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [fix_complex(item) for item in obj]
+                elif hasattr(obj, 'real') and hasattr(obj, 'imag'):
+                    return float(obj.real)
+                else:
+                    return obj
+            
+            unified_data = fix_complex(unified_data)
+            logger.info("Fixed complex numbers in unified data")
+        
+        # Check if response is too large (>50MB)
+        response_size = len(str(unified_data))
+        if response_size > 50 * 1024 * 1024:  # 50MB
+            logger.warning(f"Response too large ({response_size} bytes), saving to file instead")
+            
+            # Save to file and return file path
+            import json
+            import os
+            
+            # Create temporary results directory
+            temp_job_id = str(uuid.uuid4())
+            results_dir = f"data/results/{temp_job_id}"
+            os.makedirs(results_dir, exist_ok=True)
+            
+            # Save unified data to file
+            unified_file = f"{results_dir}/unified_data.json"
+            with open(unified_file, 'w') as f:
+                json.dump(unified_data, f)
+            
+            logger.info(f"Saved unified data to {unified_file}")
+            
+            return {
+                "job_id": temp_job_id,
+                "unified_data": None,
+                "unified_file": unified_file,
+                "file_size": response_size
+            }
+        else:
+            logger.info(f"Response size OK ({response_size} bytes), returning directly")
+            return {
+                "job_id": str(uuid.uuid4()),
+                "unified_data": unified_data
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error computing direct unified simulation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/time_domain_simulation")
+async def compute_time_domain_simulation_direct(request: dict):
+    """Compute time-domain wave equation simulation directly for realistic echoes."""
+    try:
+        logger.info(f"TIME DOMAIN SIMULATION REQUEST")
+        logger.info(f"Request data: {request}")
+        
+        # Get parameters from request
+        sensor_positions = request.get("sensor_positions", [[0.0, 0.0, 0.0]])
+        source_position = request.get("source_position", [1.0, 1.0, 1.0])
+        sample_rate = request.get("sample_rate", 44100)
+        duration = request.get("duration", 2.0)
+        mesh_file = request.get("mesh_file", "data/meshes/box_Frontend Test Simulation.msh")
+        element_order = request.get("element_order", 1)
+        boundary_absorption = request.get("boundary_impedance", {})
+        
+        # Get source signal
+        source_signal = request.get("source_signal", None)
+        if source_signal is None:
+            # Create default sine wave
+            import numpy as np
+            num_samples = int(duration * sample_rate)
+            t = np.linspace(0, duration, num_samples)
+            source_signal = np.sin(2 * np.pi * 440 * t).tolist()  # 440 Hz sine wave
+        
+        # Convert absorption coefficients to impedances
+        import numpy as np
+        c = 343.0  # Speed of sound
+        rho = 1.225  # Air density
+        boundary_impedance = {}
+        
+        for boundary_name, alpha in boundary_absorption.items():
+            if alpha > 0:
+                Z = rho * c / alpha
+                boundary_impedance[boundary_name] = Z
+                logger.info(f"Boundary {boundary_name}: alpha={alpha:.3f} -> Z={Z:.0f}")
+            else:
+                boundary_impedance[boundary_name] = 1e6
+                logger.info(f"Boundary {boundary_name}: rigid (alpha=0)")
+        
+        logger.info(f"Parameters: sensors={len(sensor_positions)}, source={source_position}")
+        logger.info(f"Audio: {sample_rate}Hz, {duration}s, {len(source_signal)} samples")
+        
+        # Initialize solver
+        solver = HelmholtzSolver(
+            mesh_file=mesh_file,
+            element_order=element_order,
+            boundary_impedance=boundary_impedance
+        )
+        
+        # Convert source signal to numpy array
+        source_signal_array = np.array(source_signal, dtype=np.float32)
+        
+        # Normalize source signal for proper FEM simulation
+        source_max = np.max(np.abs(source_signal_array))
+        if source_max > 0:
+            target_source_amplitude = 1.0  # Good range for FEM numerical stability
+            source_signal_array = source_signal_array * (target_source_amplitude / source_max)
+            logger.info(f"Normalized source signal: original max={source_max:.6f}, new max={target_source_amplitude}")
+        else:
+            logger.warning("Source signal is all zeros - FEM simulation may not work properly")
+        
+        # Run time-domain simulation
+        logger.info("Starting time-domain wave equation simulation")
+        time_domain_result = solver.solve_time_domain(
+            source_position=source_position,
+            sensor_positions=sensor_positions,
+            source_signal=source_signal_array,
+            sample_rate=sample_rate,
+            duration=duration
+        )
+        
+        logger.info("Time-domain simulation completed successfully")
+        
+        # Ensure all data is JSON serializable
+        def make_json_serializable(obj):
+            """Recursively convert numpy arrays and other non-serializable objects to JSON-serializable formats."""
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, (np.integer, np.floating)):
+                return obj.item()
+            elif isinstance(obj, dict):
+                return {key: make_json_serializable(value) for key, value in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [make_json_serializable(item) for item in obj]
+            else:
+                return obj
+        
+        # Convert the result to ensure JSON serialization
+        serializable_result = make_json_serializable(time_domain_result)
+        
+        return {
+            "success": True,
+            "time_domain_data": serializable_result,
+            "parameters": {
+                "source_position": source_position,
+                "sensor_positions": sensor_positions,
+                "sample_rate": sample_rate,
+                "duration": duration,
+                "num_samples": len(source_signal_array)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in time-domain simulation: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/jobs/{job_id}/unified_simulation")
+async def compute_unified_simulation(job_id: str, request: dict):
+    """Compute both frequency domain and time domain simulations in one call."""
+    try:
+        logger.info(f"UNIFIED SIMULATION REQUEST for job {job_id}")
+        logger.info(f"Request data: {request}")
+        
+        global results_io
+        results = await results_io.load_results(job_id)
+        if results is None:
+            logger.error(f"Job results not found for {job_id}")
+            raise HTTPException(status_code=404, detail="Job results not found")
+        
+        # Get parameters from request
+        sensor_positions = request.get("sensor_positions", [[0.0, 0.0, 0.0]])
+        source_position = request.get("source_position", [1.0, 1.0, 1.0])
+        source_frequency = request.get("source_frequency", 440.0)
+        sample_rate = request.get("sample_rate", 44100)
+        duration = request.get("duration", 2.0)
+        max_frequency = request.get("max_frequency", 20000.0)
+        num_frequencies = request.get("num_frequencies", 100)  # New parameter
+        
+        logger.info(f"Parameters: sensors={len(sensor_positions)}, source={source_position}")
+        logger.info(f"Audio: {source_frequency}Hz, {sample_rate}Hz, {duration}s, max_freq={max_frequency}Hz")
+        logger.info(f"Frequency analysis: {num_frequencies} frequencies")
+        
+        # Get solver parameters from results
+        mesh_file = results.metadata.get("mesh_file", "data/meshes/default.msh")
+        element_order = results.metadata.get("element_order", 1)
+        boundary_impedance = results.metadata.get("boundary_impedance", {})
+        
+        # Initialize solver
+        solver = HelmholtzSolver(
+            mesh_file=mesh_file,
+            element_order=element_order,
+            boundary_impedance=boundary_impedance
+        )
+        
+        # Compute frequency domain analysis for many frequencies
+        logger.info(f"Computing frequency domain analysis for {num_frequencies} frequencies")
+        import numpy as np
+        frequency_data = {}
+        frequencies = np.linspace(100, max_frequency, num_frequencies)
+        
+        for i, freq in enumerate(frequencies):
+            if i % 10 == 0:
+                logger.info(f"Computing frequency {i+1}/{num_frequencies}: {freq:.1f} Hz")
+            
+            try:
+                # Set up the solver for this frequency
+                c = 343.0  # Speed of sound
+                k = 2 * np.pi * freq / c
+                solver._current_k = k
+                solver._current_source_pos = source_position
+                solver._current_source_amp = 1.0
+                
+                # Solve Helmholtz equation for this frequency
+                pressure_values = solver.solve(solver_type="direct")
+                
+                # Evaluate at sensor positions
+                sensor_responses = []
+                for sensor_pos in sensor_positions:
+                    response = solver.evaluate_at_points(pressure_values, [sensor_pos])
+                    sensor_responses.append(response[0])
+                
+                frequency_data[freq] = {
+                    "frequency": freq,
+                    "pressure_field": pressure_values.real.tolist(),  # Convert complex to real
+                    "sensor_responses": [complex(resp).real for resp in sensor_responses]  # Convert complex to real
+                }
+                
+            except Exception as e:
+                logger.warning(f"Failed to solve at frequency {freq:.1f} Hz: {e}")
+                frequency_data[freq] = {
+                    "frequency": freq,
+                    "pressure_field": None,
+                    "sensor_responses": [0.0] * len(sensor_positions)
+                }
+        
+        # Compute time domain simulation using NEW independent solver
+        logger.info("Computing time domain simulation with independent solver")
+        
+        # Create source signal from custom audio or default
+        source_signal_array = None
+        if custom_audio_data:
+            source_signal_array = np.array(custom_audio_data, dtype=np.float32)
+            logger.info(f"Using custom audio: {len(source_signal_array)} samples")
+        else:
+            # Create default sine wave for testing
+            num_samples = int(duration * sample_rate)
+            t = np.linspace(0, duration, num_samples)
+            source_signal_array = np.sin(2 * np.pi * source_frequency * t).astype(np.float32)
+            logger.info(f"Using default sine wave: {source_frequency}Hz, {len(source_signal_array)} samples")
+        
+        # Normalize source signal for proper FEM simulation
+        # FEM needs source amplitudes in a reasonable range for numerical stability
+        source_max = np.max(np.abs(source_signal_array))
+        if source_max > 0:
+            # Normalize to reasonable FEM amplitude range (not too small, not too large)
+            target_source_amplitude = 1.0  # Good range for FEM numerical stability
+            source_signal_array = source_signal_array * (target_source_amplitude / source_max)
+            logger.info(f"Normalized source signal: original max={source_max:.6f}, new max={target_source_amplitude}")
+        else:
+            logger.warning("Source signal is all zeros - FEM simulation may not work properly")
+        
+        # Use the NEW independent time-domain solver
+        time_domain_data = solver.solve_time_domain(
+            source_position=source_position,
+            sensor_positions=sensor_positions,
+            source_signal=source_signal_array,
+            sample_rate=sample_rate,
+            duration=duration
+        )
+        
+        logger.info(f"Unified simulation completed successfully")
+        
+        # Ensure all data is JSON serializable
+        def make_json_serializable(obj):
+            """Recursively convert numpy arrays and other non-serializable objects to JSON-serializable formats."""
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, (np.integer, np.floating)):
+                return obj.item()
+            elif isinstance(obj, dict):
+                return {key: make_json_serializable(value) for key, value in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [make_json_serializable(item) for item in obj]
+            else:
+                return obj
+        
+        # Convert time domain data to ensure JSON serialization
+        serializable_time_data = make_json_serializable(time_domain_data)
+        
+        # Combine both results
+        unified_data = {
+            "job_id": job_id,
+            "frequency_data": frequency_data,
+            "time_domain_data": serializable_time_data,
+            "parameters": {
+                "num_frequencies": num_frequencies,
+                "frequency_range": [float(frequencies_to_simulate[0]), float(frequencies_to_simulate[-1])],
+                "sensor_positions": sensor_positions,
+                "source_position": source_position,
+                "source_frequency": source_frequency,
+                "sample_rate": sample_rate,
+                "duration": duration,
+                "max_frequency": max_frequency
+            }
+        }
+        
+        # Check if response is too large (>50MB)
+        response_size = len(str(unified_data))
+        if response_size > 50 * 1024 * 1024:  # 50MB
+            logger.warning(f"Response too large ({response_size} bytes), saving to file instead")
+            
+            # Save to file and return file path
+            import json
+            import os
+            
+            # Create results directory if it doesn't exist
+            results_dir = f"data/results/{job_id}"
+            os.makedirs(results_dir, exist_ok=True)
+            
+            # Save unified data to file
+            unified_file = f"{results_dir}/unified_data.json"
+            with open(unified_file, 'w') as f:
+                json.dump(unified_data, f)
+            
+            logger.info(f"Saved unified data to {unified_file}")
+            
+            return {
+                "job_id": job_id,
+                "unified_data": None,
+                "unified_file": unified_file,
+                "file_size": response_size
+            }
+        else:
+            logger.info(f"Response size OK ({response_size} bytes), returning directly")
+            return {
+                "job_id": job_id,
+                "unified_data": unified_data
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error computing unified simulation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/jobs/{job_id}/time_domain_simulation")
+async def compute_time_domain_simulation(job_id: str, request: dict):
+    """Compute comprehensive time-domain simulation with both audio and visualization."""
+    try:
+        logger.info(f"TIME DOMAIN SIMULATION REQUEST for job {job_id}")
+        logger.info(f"Request data: {request}")
+        
+        global results_io
+        results = await results_io.load_results(job_id)
+        if results is None:
+            logger.error(f"Job results not found for {job_id}")
+            raise HTTPException(status_code=404, detail="Job results not found")
+        
+        # Get parameters from request
+        sensor_positions = request.get("sensor_positions", [[0.0, 0.0, 0.0]])
+        source_position = request.get("source_position", [1.0, 1.0, 1.0])
+        source_frequency = request.get("source_frequency", 440.0)
+        sample_rate = request.get("sample_rate", 44100)
+        duration = request.get("duration", 2.0)
+        max_frequency = request.get("max_frequency", 20000.0)
+        
+        logger.info(f"Parameters: sensors={len(sensor_positions)}, source={source_position}")
+        logger.info(f"Audio: {source_frequency}Hz, {sample_rate}Hz, {duration}s, max_freq={max_frequency}Hz")
+        
+        # Get solver parameters from results
+        mesh_file = results.metadata.get("mesh_file", "data/meshes/default.msh")
+        element_order = results.metadata.get("element_order", 1)
+        boundary_impedance = results.metadata.get("boundary_impedance", {})
+        
+        # Create solver and compute comprehensive time-domain simulation
+        solver = HelmholtzSolver(
+            mesh_file=mesh_file,
+            element_order=element_order,
+            boundary_impedance=boundary_impedance
+        )
+        
+        # Use NEW independent time-domain solver instead of old IFFT method
+        logger.info("Computing time domain simulation with NEW independent solver")
+        
+        # Create source signal from custom audio or default
+        source_signal_array = None
+        if use_custom_audio and custom_audio_data:
+            source_signal_array = custom_audio_np
+            logger.info(f"Using custom audio: {len(source_signal_array)} samples")
+        else:
+            # Create default sine wave for testing
+            num_samples = int(duration * sample_rate)
+            t = np.linspace(0, duration, num_samples)
+            source_signal_array = np.sin(2 * np.pi * source_frequency * t).astype(np.float32)
+            logger.info(f"Using default sine wave: {source_frequency}Hz, {len(source_signal_array)} samples")
+        
+        # Normalize source signal for proper FEM simulation
+        # FEM needs source amplitudes in a reasonable range for numerical stability
+        source_max = np.max(np.abs(source_signal_array))
+        if source_max > 0:
+            # Normalize to reasonable FEM amplitude range (not too small, not too large)
+            target_source_amplitude = 1.0  # Good range for FEM numerical stability
+            source_signal_array = source_signal_array * (target_source_amplitude / source_max)
+            logger.info(f"Normalized source signal: original max={source_max:.6f}, new max={target_source_amplitude}")
+        else:
+            logger.warning("Source signal is all zeros - FEM simulation may not work properly")
+        
+        # Use the NEW independent time-domain solver
+        time_domain_data = solver.solve_time_domain(
+            source_position=source_position,
+            sensor_positions=sensor_positions,
+            source_signal=source_signal_array,
+            sample_rate=sample_rate,
+            duration=duration
+        )
+        
+        logger.info(f"Time-domain simulation completed successfully")
+        logger.info(f"Data size: {len(str(time_domain_data))} characters")
+        
+        # Check if response is too large (>50MB)
+        response_size = len(str(time_domain_data))
+        if response_size > 50 * 1024 * 1024:  # 50MB
+            logger.warning(f"Response too large ({response_size} bytes), saving to file instead")
+            
+            # Save to file and return file path
+            import json
+            import os
+            
+            # Create results directory if it doesn't exist
+            results_dir = f"data/results/{job_id}"
+            os.makedirs(results_dir, exist_ok=True)
+            
+            # Save time domain data to file
+            time_domain_file = f"{results_dir}/time_domain_data.json"
+            with open(time_domain_file, 'w') as f:
+                json.dump(time_domain_data, f)
+            
+            logger.info(f"Saved time-domain data to {time_domain_file}")
+            
+            return {
+                "job_id": job_id,
+                "time_domain_simulation": None,
+                "time_domain_file": time_domain_file,
+                "file_size": response_size
+            }
+        else:
+            logger.info(f"Response size OK ({response_size} bytes), returning directly")
+            return {
+                "job_id": job_id,
+                "time_domain_simulation": time_domain_data
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error computing time-domain simulation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/jobs/{job_id}/unified_data")
+async def get_unified_data(job_id: str):
+    """Get unified simulation data from file if it's too large for direct response."""
+    try:
+        import json
+        import os
+        
+        unified_file = f"data/results/{job_id}/unified_data.json"
+        
+        if not os.path.exists(unified_file):
+            raise HTTPException(status_code=404, detail="Unified data file not found")
+        
+        logger.info(f"Loading unified data from {unified_file}")
+        
+        # Check file size first
+        file_size = os.path.getsize(unified_file)
+        logger.info(f"File size: {file_size} bytes ({file_size / 1024 / 1024:.1f} MB)")
+        
+        with open(unified_file, 'r') as f:
+            unified_data = json.load(f)
+        
+        logger.info(f"Loaded unified data: {len(str(unified_data))} characters")
+        
+        return {
+            "job_id": job_id,
+            "unified_data": unified_data
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error loading unified data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/jobs/{job_id}/time_domain_data")
+async def get_time_domain_data(job_id: str, chunk: int = 0, chunk_size: int = 50):
+    """Get time-domain simulation data in chunks to avoid memory issues."""
+    try:
+        import json
+        import os
+        
+        time_domain_file = f"data/results/{job_id}/time_domain_data.json"
+        
+        if not os.path.exists(time_domain_file):
+            raise HTTPException(status_code=404, detail="Time domain data file not found")
+        
+        logger.info(f"Loading time-domain data chunk {chunk} from {time_domain_file}")
+        
+        # Check file size first
+        file_size = os.path.getsize(time_domain_file)
+        logger.info(f"File size: {file_size} bytes ({file_size / 1024 / 1024:.1f} MB)")
+        
+        with open(time_domain_file, 'r') as f:
+            time_domain_data = json.load(f)
+        
+        # Extract time field data and chunk it
+        if 'time_field_data' in time_domain_data:
+            time_field = time_domain_data['time_field_data']
+            total_time_steps = len(time_field['time_steps'])
+            
+            # Calculate chunk boundaries
+            start_idx = chunk * chunk_size
+            end_idx = min(start_idx + chunk_size, total_time_steps)
+            
+            logger.info(f"Returning time steps {start_idx} to {end_idx} of {total_time_steps}")
+            
+            # Create chunked response
+            chunked_data = {
+                'time_steps': time_field['time_steps'][start_idx:end_idx],
+                'pressure_time_series': time_field['pressure_time_series'][start_idx:end_idx],
+                'mesh_coordinates': time_field['mesh_coordinates'],
+                'frequencies_used': time_field['frequencies_used'],
+                'num_nodes': time_field['num_nodes'],
+                'num_time_steps': total_time_steps,
+                'chunk_info': {
+                    'current_chunk': chunk,
+                    'chunk_size': chunk_size,
+                    'total_chunks': (total_time_steps + chunk_size - 1) // chunk_size,
+                    'is_complete': end_idx >= total_time_steps
+                }
+            }
+            
+            return {
+                "job_id": job_id,
+                "time_domain_simulation": {
+                    'time_field_data': chunked_data,
+                    'impulse_responses': time_domain_data.get('impulse_responses', {}),
+                    'sensor_positions': time_domain_data.get('sensor_positions', []),
+                    'source_position': time_domain_data.get('source_position', []),
+                    'source_frequency': time_domain_data.get('source_frequency', 0),
+                    'parameters': time_domain_data.get('parameters', {})
+                }
+            }
+        else:
+            # Fallback to full data if no time_field_data
+            return {
+                "job_id": job_id,
+                "time_domain_simulation": time_domain_data
+            }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error loading time-domain data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/jobs/{job_id}/impulse_response")
+async def compute_impulse_response(job_id: str, request: dict):
+    """Compute impulse response for a sensor position (legacy endpoint)."""
+    try:
+        # Use the new comprehensive time-domain simulation for backward compatibility
+        sensor_position = request.get("sensor_position", [0.0, 0.0, 0.0])
+        sample_rate = request.get("sample_rate", 44100)
+        duration = request.get("duration", 2.0)
+        
+        # Convert to new format
+        new_request = {
+            "sensor_positions": [sensor_position],
+            "source_position": sensor_position,  # Use sensor as source for impulse response
+            "source_frequency": 1.0,  # Impulse has all frequencies
+            "sample_rate": sample_rate,
+            "duration": duration,
+            "max_frequency": sample_rate / 2
+        }
+        
+        response = await compute_time_domain_simulation(job_id, new_request)
+        time_domain_data = response["time_domain_simulation"]
+        
+        # Extract impulse response for the first sensor
+        sensor_0_response = time_domain_data["impulse_responses"].get(0, {})
+        
+        return {
+            "job_id": job_id,
+            "sensor_position": sensor_position,
+            "impulse_response": sensor_0_response
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error computing impulse response: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.websocket("/ws/jobs/{job_id}")
 async def websocket_endpoint(websocket: WebSocket, job_id: str):
     """WebSocket endpoint for real-time job updates."""
     await manager.connect(websocket)
+    last_status = None
     try:
         while True:
-            # Send periodic updates
+            # Send updates only when status changes
             global job_manager
             status = await job_manager.get_job_status(job_id)
             if status:
-                await manager.send_personal_message(
-                    json.dumps(status.dict()), websocket
-                )
+                # Only send if status has actually changed
+                current_status_json = json.dumps(status.dict())
+                if current_status_json != last_status:
+                    logger.info(f"WebSocket sending status update for job {job_id}: {status.status}")
+                    await manager.send_personal_message(current_status_json, websocket)
+                    last_status = current_status_json
+                    
+                    # If job is completed or failed, close connection after sending
+                    if status.status in ['completed', 'failed']:
+                        logger.info(f"Job {job_id} finished with status {status.status}, closing WebSocket")
+                        break
             await asyncio.sleep(1)
     except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected for job {job_id}")
         manager.disconnect(websocket)
 
 
