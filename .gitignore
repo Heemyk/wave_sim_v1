@@ -291,6 +291,7 @@ dist
 
 # Project-specific files
 # Data directories
+data/
 data/meshes/*
 data/results/*
 data/cache/*
