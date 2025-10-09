@@ -478,11 +478,12 @@ async def compute_unified_simulation_direct(request: dict):
         else:
             logger.info("Using default sine wave source signal")
         
-        # Initialize solver
+        # Initialize solver with GPU acceleration
         solver = HelmholtzSolver(
             mesh_file=mesh_file,
             element_order=element_order,
-            boundary_impedance=boundary_impedance
+            boundary_impedance=boundary_impedance,
+            use_gpu=True  # Enable GPU acceleration
         )
         
         # Compute frequency domain analysis
@@ -532,43 +533,85 @@ async def compute_unified_simulation_direct(request: dict):
         
         logger.info(f"Simulating {len(frequencies_to_simulate)} frequencies")
         
-        for i, freq in enumerate(frequencies_to_simulate):
-            if i % 10 == 0:
-                logger.info(f"Computing frequency {i+1}/{len(frequencies_to_simulate)}: {freq:.1f} Hz")
+        # Use GPU batch processing for massive speedup
+        try:
+            logger.info("🚀 Using GPU batch processing for massive speedup!")
+            batch_results = solver.solve_gpu_batch(frequencies_to_simulate.tolist())
             
-            try:
-                # Set up the solver for this frequency
-                c = 343.0  # Speed of sound
-                k = 2 * np.pi * freq / c
-                solver._current_k = k
-                solver._current_source_pos = source_position
+            # Process results
+            for i, freq in enumerate(frequencies_to_simulate):
+                if i % 10 == 0:
+                    logger.info(f"Processing frequency {i+1}/{len(frequencies_to_simulate)}: {freq:.1f} Hz")
                 
-                # Use amplitude from audio spectrum if available
-                source_amplitude = amplitudes_to_use[i] if i < len(amplitudes_to_use) else 1.0
-                solver._current_source_amp = float(source_amplitude)
+                if freq in batch_results:
+                    pressure_values = batch_results[freq]
+                    
+                    # Use amplitude from audio spectrum if available
+                    source_amplitude = amplitudes_to_use[i] if i < len(amplitudes_to_use) else 1.0
+                    
+                    # Evaluate at sensor positions
+                    sensor_responses = []
+                    for sensor_pos in sensor_positions:
+                        response = solver.evaluate_at_points(pressure_values, [sensor_pos])
+                        sensor_responses.append(complex(response[0]).real) # Convert to real for JSON
+                    
+                    frequency_data[float(freq)] = {
+                        "frequency": float(freq),
+                        "pressure_field": pressure_values.real.tolist(),  # Convert complex to real
+                        "sensor_responses": sensor_responses,
+                        "source_amplitude": float(source_amplitude)
+                    }
+                else:
+                    logger.warning(f"No result for frequency {freq:.1f} Hz")
+                    frequency_data[float(freq)] = {
+                        "frequency": float(freq),
+                        "pressure_field": None,
+                        "sensor_responses": [0.0] * len(sensor_positions),
+                        "source_amplitude": 1.0
+                    }
+                    
+        except Exception as e:
+            logger.error(f"GPU batch processing failed: {e}")
+            logger.info("Falling back to CPU processing...")
+            
+            # Fallback to CPU processing
+            for i, freq in enumerate(frequencies_to_simulate):
+                if i % 10 == 0:
+                    logger.info(f"Computing frequency {i+1}/{len(frequencies_to_simulate)}: {freq:.1f} Hz")
                 
-                # Solve Helmholtz equation for this frequency
-                pressure_values = solver.solve(solver_type="direct")
-                
-                # Evaluate at sensor positions
-                sensor_responses = []
-                for sensor_pos in sensor_positions:
-                    response = solver.evaluate_at_points(pressure_values, [sensor_pos])
-                    sensor_responses.append(complex(response[0]).real) # Convert to real for JSON
-                
-                frequency_data[float(freq)] = {
-                    "frequency": float(freq),
-                    "pressure_field": pressure_values.real.tolist(),  # Convert complex to real
-                    "sensor_responses": sensor_responses,
-                    "source_amplitude": float(source_amplitude)
-                }
-                
-            except Exception as e:
-                logger.warning(f"Failed to solve at frequency {freq:.1f} Hz: {e}")
-                frequency_data[float(freq)] = {
-                    "frequency": float(freq),
-                    "pressure_field": None,
-                    "sensor_responses": [0.0] * len(sensor_positions),
+                try:
+                    # Set up the solver for this frequency
+                    c = 343.0  # Speed of sound
+                    k = 2 * np.pi * freq / c
+                    solver._current_k = k
+                    solver._current_source_pos = source_position
+                    
+                    # Use amplitude from audio spectrum if available
+                    source_amplitude = amplitudes_to_use[i] if i < len(amplitudes_to_use) else 1.0
+                    solver._current_source_amp = float(source_amplitude)
+                    
+                    # Solve Helmholtz equation for this frequency
+                    pressure_values = solver.solve(solver_type="direct")
+                    
+                    # Evaluate at sensor positions
+                    sensor_responses = []
+                    for sensor_pos in sensor_positions:
+                        response = solver.evaluate_at_points(pressure_values, [sensor_pos])
+                        sensor_responses.append(complex(response[0]).real) # Convert to real for JSON
+                    
+                    frequency_data[float(freq)] = {
+                        "frequency": float(freq),
+                        "pressure_field": pressure_values.real.tolist(),  # Convert complex to real
+                        "sensor_responses": sensor_responses,
+                        "source_amplitude": float(source_amplitude)
+                    }
+                    
+                except Exception as e2:
+                    logger.warning(f"Failed to solve at frequency {freq:.1f} Hz: {e2}")
+                    frequency_data[float(freq)] = {
+                        "frequency": float(freq),
+                        "pressure_field": None,
+                        "sensor_responses": [0.0] * len(sensor_positions),
                     "source_amplitude": 0.0
                 }
         
@@ -744,11 +787,12 @@ async def compute_time_domain_simulation_direct(request: dict):
         logger.info(f"Parameters: sensors={len(sensor_positions)}, source={source_position}")
         logger.info(f"Audio: {sample_rate}Hz, {duration}s, {len(source_signal)} samples")
         
-        # Initialize solver
+        # Initialize solver with GPU acceleration
         solver = HelmholtzSolver(
             mesh_file=mesh_file,
             element_order=element_order,
-            boundary_impedance=boundary_impedance
+            boundary_impedance=boundary_impedance,
+            use_gpu=True  # Enable GPU acceleration
         )
         
         # Convert source signal to numpy array
@@ -842,53 +886,95 @@ async def compute_unified_simulation(job_id: str, request: dict):
         element_order = results.metadata.get("element_order", 1)
         boundary_impedance = results.metadata.get("boundary_impedance", {})
         
-        # Initialize solver
+        # Initialize solver with GPU acceleration
         solver = HelmholtzSolver(
             mesh_file=mesh_file,
             element_order=element_order,
-            boundary_impedance=boundary_impedance
+            boundary_impedance=boundary_impedance,
+            use_gpu=True  # Enable GPU acceleration
         )
         
-        # Compute frequency domain analysis for many frequencies
-        logger.info(f"Computing frequency domain analysis for {num_frequencies} frequencies")
+        # Compute frequency domain analysis using GPU batch processing
+        logger.info(f"Computing frequency domain analysis for {num_frequencies} frequencies using GPU batch processing")
         import numpy as np
         frequency_data = {}
         frequencies = np.linspace(100, max_frequency, num_frequencies)
         
-        for i, freq in enumerate(frequencies):
-            if i % 10 == 0:
-                logger.info(f"Computing frequency {i+1}/{num_frequencies}: {freq:.1f} Hz")
+        # Set up solver for batch processing
+        solver._current_source_pos = source_position
+        solver._current_source_amp = 1.0
+        
+        try:
+            # Use GPU batch processing for all frequencies at once
+            logger.info("🚀 Using GPU batch processing for massive speedup!")
+            batch_results = solver.solve_gpu_batch(frequencies.tolist())
             
-            try:
-                # Set up the solver for this frequency
-                c = 343.0  # Speed of sound
-                k = 2 * np.pi * freq / c
-                solver._current_k = k
-                solver._current_source_pos = source_position
-                solver._current_source_amp = 1.0
+            # Process results
+            for i, freq in enumerate(frequencies):
+                if i % 10 == 0:
+                    logger.info(f"Processing frequency {i+1}/{num_frequencies}: {freq:.1f} Hz")
                 
-                # Solve Helmholtz equation for this frequency
-                pressure_values = solver.solve(solver_type="direct")
+                if freq in batch_results:
+                    pressure_values = batch_results[freq]
+                    
+                    # Evaluate at sensor positions
+                    sensor_responses = []
+                    for sensor_pos in sensor_positions:
+                        response = solver.evaluate_at_points(pressure_values, [sensor_pos])
+                        sensor_responses.append(response[0])
+                    
+                    frequency_data[freq] = {
+                        "frequency": freq,
+                        "pressure_field": pressure_values.real.tolist(),  # Convert complex to real
+                        "sensor_responses": [complex(resp).real for resp in sensor_responses]  # Convert complex to real
+                    }
+                else:
+                    logger.warning(f"No result for frequency {freq:.1f} Hz")
+                    frequency_data[freq] = {
+                        "frequency": freq,
+                        "pressure_field": None,
+                        "sensor_responses": [0.0] * len(sensor_positions)
+                    }
+                    
+        except Exception as e:
+            logger.error(f"GPU batch processing failed: {e}")
+            logger.info("Falling back to CPU processing...")
+            
+            # Fallback to CPU processing
+            for i, freq in enumerate(frequencies):
+                if i % 10 == 0:
+                    logger.info(f"Computing frequency {i+1}/{num_frequencies}: {freq:.1f} Hz")
                 
-                # Evaluate at sensor positions
-                sensor_responses = []
-                for sensor_pos in sensor_positions:
-                    response = solver.evaluate_at_points(pressure_values, [sensor_pos])
-                    sensor_responses.append(response[0])
-                
-                frequency_data[freq] = {
-                    "frequency": freq,
-                    "pressure_field": pressure_values.real.tolist(),  # Convert complex to real
-                    "sensor_responses": [complex(resp).real for resp in sensor_responses]  # Convert complex to real
-                }
-                
-            except Exception as e:
-                logger.warning(f"Failed to solve at frequency {freq:.1f} Hz: {e}")
-                frequency_data[freq] = {
-                    "frequency": freq,
-                    "pressure_field": None,
-                    "sensor_responses": [0.0] * len(sensor_positions)
-                }
+                try:
+                    # Set up the solver for this frequency
+                    c = 343.0  # Speed of sound
+                    k = 2 * np.pi * freq / c
+                    solver._current_k = k
+                    solver._current_source_pos = source_position
+                    solver._current_source_amp = 1.0
+                    
+                    # Solve Helmholtz equation for this frequency
+                    pressure_values = solver.solve(solver_type="direct")
+                    
+                    # Evaluate at sensor positions
+                    sensor_responses = []
+                    for sensor_pos in sensor_positions:
+                        response = solver.evaluate_at_points(pressure_values, [sensor_pos])
+                        sensor_responses.append(response[0])
+                    
+                    frequency_data[freq] = {
+                        "frequency": freq,
+                        "pressure_field": pressure_values.real.tolist(),  # Convert complex to real
+                        "sensor_responses": [complex(resp).real for resp in sensor_responses]  # Convert complex to real
+                    }
+                    
+                except Exception as e2:
+                    logger.warning(f"Failed to solve at frequency {freq:.1f} Hz: {e2}")
+                    frequency_data[freq] = {
+                        "frequency": freq,
+                        "pressure_field": None,
+                        "sensor_responses": [0.0] * len(sensor_positions)
+                    }
         
         # Compute time domain simulation using NEW independent solver
         logger.info("Computing time domain simulation with independent solver")

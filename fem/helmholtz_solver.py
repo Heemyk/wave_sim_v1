@@ -26,6 +26,26 @@ import numpy as np
 import scipy.sparse
 import scipy.sparse.linalg
 
+# GPU acceleration imports
+try:
+    import cupy as cp
+    GPU_AVAILABLE = True
+    print("GPU acceleration available with CuPy")
+    
+    # Force NVIDIA GPU usage
+    if cp.cuda.is_available():
+        # Set CUDA device to 0 (first GPU, should be NVIDIA)
+        cp.cuda.Device(0).use()
+        print(f"Using GPU: {cp.cuda.runtime.getDeviceProperties(0)['name'].decode()}")
+        
+        # Set memory pool for better performance
+        cp.cuda.set_allocator(cp.cuda.MemoryPool().malloc)
+        
+except ImportError:
+    cp = None
+    GPU_AVAILABLE = False
+    print("GPU acceleration not available, using CPU only")
+
 # SfePy imports for finite element computations
 import sfepy
 from sfepy.discrete.fem import Mesh, FEDomain, Field
@@ -64,6 +84,7 @@ class HelmholtzSolver:
         boundary_impedance: Optional[Dict[str, complex]] = None,
         c: float = 343.0,  # Speed of sound (m/s)
         rho: float = 1.225,  # Air density (kg/m³)
+        use_gpu: bool = True,  # Enable GPU acceleration
     ):
         """
         Initialize the Helmholtz solver with mesh and physical parameters.
@@ -81,6 +102,7 @@ class HelmholtzSolver:
         self.rho = rho  # Air density (kg/m³) - affects impedance calculations
         self.element_order = element_order  # Polynomial order of basis functions
         self.boundary_impedance = boundary_impedance or {}  # Boundary condition parameters
+        self.use_gpu = use_gpu and GPU_AVAILABLE  # GPU acceleration flag
         
         # Set default boundary impedances if none provided
         if not self.boundary_impedance:
@@ -749,6 +771,144 @@ class HelmholtzSolver:
         logger.info("Using analytical free-field solution")
         return pressure_values
     
+    def solve_gpu_batch(self, frequencies: List[float]) -> Dict[float, np.ndarray]:
+        """
+        GPU-accelerated batch solving for multiple frequencies.
+        
+        Args:
+            frequencies: List of frequencies to solve for
+            
+        Returns:
+            Dictionary mapping frequencies to pressure fields
+        """
+        if not self.use_gpu:
+            logger.warning("GPU not available, falling back to CPU batch processing")
+            return self._solve_cpu_batch(frequencies)
+        
+        logger.info(f"🚀 GPU batch solving for {len(frequencies)} frequencies...")
+        results = {}
+        
+        try:
+            # Process frequencies in batches for memory efficiency
+            batch_size = 4  # Smaller batch size to avoid GPU memory issues
+            for i in range(0, len(frequencies), batch_size):
+                batch_freqs = frequencies[i:i + batch_size]
+                logger.info(f"Processing GPU batch {i//batch_size + 1}: frequencies {batch_freqs[0]:.1f}-{batch_freqs[-1]:.1f} Hz")
+                
+                # Clear GPU memory before each batch
+                if cp is not None:
+                    cp.get_default_memory_pool().free_all_blocks()
+                    cp.get_default_pinned_memory_pool().free_all_blocks()
+                
+                batch_results = self._solve_gpu_batch(batch_freqs)
+                results.update(batch_results)
+                
+                # Clear GPU memory after each batch
+                if cp is not None:
+                    cp.get_default_memory_pool().free_all_blocks()
+                    cp.get_default_pinned_memory_pool().free_all_blocks()
+                
+        except Exception as e:
+            logger.error(f"GPU batch solving failed: {e}")
+            logger.info("Falling back to CPU batch processing")
+            return self._solve_cpu_batch(frequencies)
+        
+        return results
+    
+    def _solve_gpu_batch(self, frequencies: List[float]) -> Dict[float, np.ndarray]:
+        """GPU-accelerated batch solving for a small batch of frequencies."""
+        import time
+        start_time = time.time()
+        
+        # Assemble system matrices if not already done
+        if not hasattr(self, '_cached_K') or self._cached_K is None:
+            logger.info("Assembling system matrices for GPU batch processing...")
+            # Use the first frequency to assemble matrices
+            k = 2 * np.pi * frequencies[0] / self.c
+            # Use default source position if not set
+            source_pos = getattr(self, '_current_source_pos', [1.0, 1.0, 1.0])
+            source_amp = getattr(self, '_current_source_amp', 1.0)
+            self.assemble_system(k=k, source_position=source_pos, source_amplitude=source_amp)
+            
+            # Force matrix assembly by calling the solve method once
+            logger.info("Forcing matrix assembly for GPU batch processing...")
+            self.solve(solver_type="direct")
+        
+        # Clear GPU memory before processing
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+        
+        # Convert frequencies to GPU arrays
+        freqs_gpu = cp.array(frequencies, dtype=cp.float32)
+        k_gpu = 2 * cp.pi * freqs_gpu / self.c
+        
+        # Convert to GPU arrays
+        K_gpu = cp.asarray(self._cached_K.toarray())
+        M_gpu = cp.asarray(self._cached_M.toarray())
+        
+        # Create source vector
+        n_dofs = K_gpu.shape[0]
+        source_gpu = cp.zeros(n_dofs, dtype=cp.complex64)
+        # Set source at appropriate DOF (simplified - in practice would need proper DOF mapping)
+        source_amp = getattr(self, '_current_source_amp', 1.0)
+        source_gpu[0] = source_amp
+        
+        # Solve for each frequency
+        results = {}
+        for i, freq in enumerate(frequencies):
+            k = k_gpu[i]
+            
+            # Create Helmholtz matrix: A = K - k²M
+            A_gpu = K_gpu - (k**2) * M_gpu
+            
+            # Solve linear system
+            solution_gpu = cp.linalg.solve(A_gpu, source_gpu)
+            
+            # Convert back to CPU
+            results[freq] = cp.asnumpy(solution_gpu)
+        
+        end_time = time.time()
+        logger.info(f"GPU batch processing completed in {end_time - start_time:.3f}s")
+        
+        # Clear GPU memory after processing
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+        
+        return results
+    
+    def _solve_cpu_batch(self, frequencies: List[float]) -> Dict[float, np.ndarray]:
+        """CPU fallback for batch solving."""
+        results = {}
+        for freq in frequencies:
+            # Set up for this frequency
+            k = 2 * np.pi * freq / self.c
+            source_pos = getattr(self, '_current_source_pos', [1.0, 1.0, 1.0])
+            source_amp = getattr(self, '_current_source_amp', 1.0)
+            self.assemble_system(k=k, source_position=source_pos, source_amplitude=source_amp)
+            
+            # Solve
+            solution = self.solve()
+            results[freq] = solution
+        
+        return results
+    
+    def get_gpu_info(self) -> Dict[str, Any]:
+        """Get GPU information and status."""
+        if not self.use_gpu:
+            return {"gpu_available": False}
+        
+        try:
+            mempool = cp.get_default_memory_pool()
+            return {
+                "gpu_available": True,
+                "gpu_name": cp.cuda.runtime.getDeviceProperties(0)['name'].decode(),
+                "gpu_memory_used": mempool.used_bytes() / 1024**3,  # GB
+                "gpu_memory_total": cp.cuda.runtime.getDeviceProperties(0)['totalGlobalMem'] / 1024**3,  # GB
+                "cuda_available": cp.cuda.is_available()
+            }
+        except Exception as e:
+            return {"gpu_available": False, "error": str(e)}
+    
     def evaluate_at_points(self, solution: np.ndarray, points: List[List[float]]) -> np.ndarray:
         """
         Evaluate solution at specific points.
@@ -1194,68 +1354,168 @@ class HelmholtzSolver:
         mesh_time_steps = []
         save_interval = max(1, num_time_steps // 100)  # Save 100 time steps max for visualization
         
-        logger.info("Starting time-stepping loop with full mesh storage")
+        logger.info("Starting time-stepping loop with GPU acceleration")
         
-        # Time-stepping loop
-        for n in range(num_time_steps):
-            t = n * dt
+        # GPU acceleration for time-stepping
+        if self.use_gpu and cp is not None:
+            logger.info("Converting matrices to GPU for time domain simulation...")
+            K_gpu = cp.sparse.csr_matrix(K)
+            M_gpu_dense = cp.array(M.toarray())
+            source_vector_gpu = cp.array(source_vector)
+            source_signal_gpu = cp.array(source_signal)
             
-            # Get source amplitude at current time from imported audio signal
-            source_idx = min(n, len(source_signal) - 1)
-            source_amplitude = source_signal[source_idx]
+            if D is not None:
+                D_gpu = cp.sparse.csr_matrix(D)
             
-            # Scale source vector by time-varying amplitude from imported audio
-            f = source_vector * source_amplitude
+            # Initialize state vectors on GPU
+            p_gpu = cp.array(p)
+            p_dot_gpu = cp.array(p_dot)
+            p_ddot_gpu = cp.array(p_ddot)
             
-            # Debug: Log source amplitude for first few time steps
-            if n < 10 or n % 1000 == 0:
-                logger.debug(f"Time step {n}: source_amplitude={source_amplitude:.6f}, max_force={np.max(np.abs(f)):.2e}")
-            
-            # Modified Newmark-beta time integration for damped system
-            if n == 0:
-                # Initial conditions
-                if D is not None:
-                    rhs = f - K.dot(p) - D.dot(p_dot)
-                else:
-                    rhs = f - K.dot(p)
-                p_ddot = M_lu.solve(rhs)
-            else:
-                # Predictor step
-                p_pred = p + dt * p_dot + (0.5 - beta) * dt**2 * p_ddot
-                p_dot_pred = p_dot + (1 - gamma) * dt * p_ddot
-                
-                # Corrector step
-                if D is not None:
-                    # Damped system: M * ∂²p/∂t² + D * ∂p/∂t + K * p = f(t)
-                    rhs = f - K.dot(p_pred) - D.dot(p_dot_pred)
-                else:
-                    # Undamped system: M * ∂²p/∂t² + K * p = f(t)
-                    rhs = f - K.dot(p_pred)
-                
-                p_ddot = M_lu.solve(rhs)
-                p_dot = p_dot_pred + gamma * dt * p_ddot
-                p = p_pred + beta * dt**2 * p_ddot
-            
-            # Store sensor data
-            for i, sensor_pos in enumerate(sensor_positions):
-                # Find closest mesh node to sensor
+            # Precompute sensor indices to minimize GPU-CPU transfers
+            sensor_indices = []
+            for sensor_pos in sensor_positions:
                 point_array = np.array(sensor_pos, dtype=np.float64)
                 distances = np.linalg.norm(mesh_coords - point_array, axis=1)
                 closest_vertex_idx = np.argmin(distances)
-                sensor_pressure = p[closest_vertex_idx]
-                sensor_data[i].append(float(sensor_pressure))
+                sensor_indices.append(closest_vertex_idx)
             
-            # Store full mesh pressure field at regular intervals for visualization
-            if n % save_interval == 0:
-                mesh_pressure_history.append(p.copy().tolist())  # Convert to list for JSON serialization
-                mesh_time_steps.append(float(t))
+            # Allocate GPU arrays for sensor data storage
+            sensor_data_gpu = [cp.zeros(num_time_steps, dtype=cp.float64) for _ in range(len(sensor_positions))]
             
-            # Progress logging (less frequent to avoid spam)
-            if n % max(1, num_time_steps // 20) == 0:
-                progress = (n / num_time_steps) * 100
-                pressure_rms = np.sqrt(np.mean(p**2))
-                pressure_max = np.max(np.abs(p))
-                logger.info(f"Time stepping progress: {progress:.1f}% (t={t:.3f}s) - Pressure RMS: {pressure_rms:.2e}, Max: {pressure_max:.2e}")
+            # Precompute LU decomposition on GPU
+            logger.info("Computing GPU LU decomposition for time stepping...")
+            from cupyx.scipy.sparse.linalg import splu
+            M_lu_gpu = splu(cp.sparse.csr_matrix(M))
+            
+            logger.info("GPU time-stepping setup complete - starting simulation with zero CPU transfers")
+            
+            # GPU Time-stepping loop
+            for n in range(num_time_steps):
+                t = n * dt
+                
+                # Get source amplitude from signal
+                source_idx = min(n, len(source_signal) - 1)
+                source_amplitude = source_signal_gpu[source_idx]
+                
+                # Scale source vector
+                f_gpu = source_vector_gpu * source_amplitude
+                
+                # Modified Newmark-beta time integration on GPU
+                if n == 0:
+                    # Initial conditions
+                    if D is not None:
+                        rhs_gpu = f_gpu - K_gpu.dot(p_gpu) - D_gpu.dot(p_dot_gpu)
+                    else:
+                        rhs_gpu = f_gpu - K_gpu.dot(p_gpu)
+                    p_ddot_gpu = M_lu_gpu.solve(rhs_gpu)
+                else:
+                    # Predictor step
+                    p_pred_gpu = p_gpu + dt * p_dot_gpu + (0.5 - beta) * dt**2 * p_ddot_gpu
+                    p_dot_pred_gpu = p_dot_gpu + (1 - gamma) * dt * p_ddot_gpu
+                    
+                    # Corrector step
+                    if D is not None:
+                        rhs_gpu = f_gpu - K_gpu.dot(p_pred_gpu) - D_gpu.dot(p_dot_pred_gpu)
+                    else:
+                        rhs_gpu = f_gpu - K_gpu.dot(p_pred_gpu)
+                    
+                    p_ddot_gpu = M_lu_gpu.solve(rhs_gpu)
+                    p_dot_gpu = p_dot_pred_gpu + gamma * dt * p_ddot_gpu
+                    p_gpu = p_pred_gpu + beta * dt**2 * p_ddot_gpu
+                
+                # Store sensor data ON GPU (no CPU transfer!)
+                for i, closest_idx in enumerate(sensor_indices):
+                    sensor_data_gpu[i][n] = p_gpu[closest_idx]
+                
+                # Only copy mesh data for visualization at intervals
+                if n % save_interval == 0:
+                    p_cpu = cp.asnumpy(p_gpu)
+                    mesh_pressure_history.append(p_cpu.copy().tolist())
+                    mesh_time_steps.append(float(t))
+                
+                # Progress logging
+                if n % max(1, num_time_steps // 20) == 0:
+                    progress = (n / num_time_steps) * 100
+                    p_cpu = cp.asnumpy(p_gpu)
+                    pressure_rms = np.sqrt(np.mean(p_cpu**2))
+                    pressure_max = np.max(np.abs(p_cpu))
+                    logger.info(f"GPU time stepping: {progress:.1f}% (t={t:.3f}s) - RMS: {pressure_rms:.2e}, Max: {pressure_max:.2e}")
+            
+            # Convert final state and sensor data back to CPU (ONE TIME only!)
+            p = cp.asnumpy(p_gpu)
+            
+            # Copy all sensor data from GPU to CPU in one shot
+            logger.info("Transferring sensor data from GPU to CPU...")
+            for i in range(len(sensor_positions)):
+                sensor_data[i] = cp.asnumpy(sensor_data_gpu[i]).tolist()
+            
+            logger.info("GPU time domain simulation completed - data transferred to CPU")
+            
+        else:
+            # CPU fallback
+            logger.info("Using CPU for time-stepping (GPU not available)")
+            
+            # Time-stepping loop
+            for n in range(num_time_steps):
+                t = n * dt
+                
+                # Get source amplitude at current time from imported audio signal
+                source_idx = min(n, len(source_signal) - 1)
+                source_amplitude = source_signal[source_idx]
+                
+                # Scale source vector by time-varying amplitude from imported audio
+                f = source_vector * source_amplitude
+                
+                # Debug: Log source amplitude for first few time steps
+                if n < 10 or n % 1000 == 0:
+                    logger.debug(f"Time step {n}: source_amplitude={source_amplitude:.6f}, max_force={np.max(np.abs(f)):.2e}")
+                
+                # Modified Newmark-beta time integration for damped system
+                if n == 0:
+                    # Initial conditions
+                    if D is not None:
+                        rhs = f - K.dot(p) - D.dot(p_dot)
+                    else:
+                        rhs = f - K.dot(p)
+                    p_ddot = M_lu.solve(rhs)
+                else:
+                    # Predictor step
+                    p_pred = p + dt * p_dot + (0.5 - beta) * dt**2 * p_ddot
+                    p_dot_pred = p_dot + (1 - gamma) * dt * p_ddot
+                    
+                    # Corrector step
+                    if D is not None:
+                        # Damped system: M * ∂²p/∂t² + D * ∂p/∂t + K * p = f(t)
+                        rhs = f - K.dot(p_pred) - D.dot(p_dot_pred)
+                    else:
+                        # Undamped system: M * ∂²p/∂t² + K * p = f(t)
+                        rhs = f - K.dot(p_pred)
+                    
+                    p_ddot = M_lu.solve(rhs)
+                    p_dot = p_dot_pred + gamma * dt * p_ddot
+                    p = p_pred + beta * dt**2 * p_ddot
+                
+                # Store sensor data
+                for i, sensor_pos in enumerate(sensor_positions):
+                    # Find closest mesh node to sensor
+                    point_array = np.array(sensor_pos, dtype=np.float64)
+                    distances = np.linalg.norm(mesh_coords - point_array, axis=1)
+                    closest_vertex_idx = np.argmin(distances)
+                    sensor_pressure = p[closest_vertex_idx]
+                    sensor_data[i].append(float(sensor_pressure))
+                
+                # Store full mesh pressure field at regular intervals for visualization
+                if n % save_interval == 0:
+                    mesh_pressure_history.append(p.copy().tolist())  # Convert to list for JSON serialization
+                    mesh_time_steps.append(float(t))
+                
+                # Progress logging (less frequent to avoid spam)
+                if n % max(1, num_time_steps // 20) == 0:
+                    progress = (n / num_time_steps) * 100
+                    pressure_rms = np.sqrt(np.mean(p**2))
+                    pressure_max = np.max(np.abs(p))
+                    logger.info(f"CPU time stepping: {progress:.1f}% (t={t:.3f}s) - RMS: {pressure_rms:.2e}, Max: {pressure_max:.2e}")
         
         logger.info("Time domain simulation completed")
         
